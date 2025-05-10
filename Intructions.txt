@@ -1,0 +1,1 @@
+python video_processor_with_progress.py --input input.mp4 --short_length 60 --long_length 360 --fps 24 --motion_detection
