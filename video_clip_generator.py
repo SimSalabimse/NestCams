@@ -2,6 +2,8 @@ import subprocess
 import random
 import sys
 import os
+import time
+import re
 
 # Check for correct command-line arguments
 if len(sys.argv) != 2:
@@ -15,10 +17,13 @@ if not os.path.isfile(input_file):
     print(f"Error: Input file '{input_file}' does not exist.")
     sys.exit(1)
 
+# Get the directory of the input file
+input_dir = os.path.dirname(input_file) if os.path.dirname(input_file) else '.'
+
 # Generate output file names based on input file
 base_name = os.path.splitext(os.path.basename(input_file))[0]
-output_60s = f"{base_name}_60s.mp4"
-output_12m = f"{base_name}_12m.mp4"
+output_60s = os.path.join(input_dir, f"{base_name}_60s.mp4")
+output_12m = os.path.join(input_dir, f"{base_name}_12m.mp4")
 
 # Get video duration using ffprobe
 ffprobe_cmd = [
@@ -34,44 +39,56 @@ except subprocess.CalledProcessError as e:
 
 print(f"Video duration: {duration:.2f} seconds")
 
+# Function to generate a clip with progress bar
+def generate_clip(input_file, output_file, start_time, clip_duration):
+    print(f"Generating clip: {output_file}")
+    cmd = [
+        'ffmpeg', '-i', input_file, '-ss', str(start_time), '-t', str(clip_duration),
+        '-c:v', 'libx264', '-crf', '23', '-preset', 'medium',
+        '-c:a', 'aac', '-b:a', '128k', '-progress', 'pipe:1', '-y', output_file
+    ]
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, universal_newlines=True)
+    
+    total_seconds = clip_duration
+    pattern = re.compile(r'out_time_ms=(\d+)')
+    
+    while True:
+        line = process.stdout.readline()
+        if not line:
+            break
+        match = pattern.search(line)
+        if match:
+            out_time_ms = int(match.group(1))
+            out_time_seconds = out_time_ms / 1_000_000
+            percentage = (out_time_seconds / total_seconds) * 100
+            sys.stdout.write(f"\rProgress: {percentage:.2f}%")
+            sys.stdout.flush()
+    process.wait()
+    print()  # New line after progress
+    if process.returncode != 0:
+        print(f"Error generating clip: {output_file}")
+        sys.exit(1)
+
+# Record start time for total process
+start_time_total = time.time()
+
 # Generate 60-second clip
 if duration < 60:
     print("Error: Video is too short for a 60-second clip.")
     sys.exit(1)
-
 max_start_60 = duration - 60
 start_time_60 = random.uniform(0, max_start_60)
-print(f"Generating 60-second clip starting at {start_time_60:.2f} seconds")
-
-ffmpeg_cmd_60s = [
-    'ffmpeg', '-i', input_file, '-ss', str(start_time_60), '-t', '60',
-    '-c:v', 'libx264', '-crf', '23', '-preset', 'medium',
-    '-c:a', 'aac', '-b:a', '128k', '-y', output_60s
-]
-try:
-    subprocess.run(ffmpeg_cmd_60s, check=True)
-    print(f"Done generating {output_60s}")
-except subprocess.CalledProcessError as e:
-    print(f"Error generating 60-second clip: {e}")
-    sys.exit(1)
+generate_clip(input_file, output_60s, start_time_60, 60)
 
 # Generate 12-minute (720-second) clip
 if duration < 720:
     print("Error: Video is too short for a 12-minute clip.")
     sys.exit(1)
-
 max_start_12m = duration - 720
 start_time_12m = random.uniform(0, max_start_12m)
-print(f"Generating 12-minute clip starting at {start_time_12m:.2f} seconds")
+generate_clip(input_file, output_12m, start_time_12m, 720)
 
-ffmpeg_cmd_12m = [
-    'ffmpeg', '-i', input_file, '-ss', str(start_time_12m), '-t', '720',
-    '-c:v', 'libx264', '-crf', '23', '-preset', 'medium',
-    '-c:a', 'aac', '-b:a', '128k', '-y', output_12m
-]
-try:
-    subprocess.run(ffmpeg_cmd_12m, check=True)
-    print(f"Done generating {output_12m}")
-except subprocess.CalledProcessError as e:
-    print(f"Error generating 12-minute clip: {e}")
-    sys.exit(1)
+# Calculate and print total process time
+end_time_total = time.time()
+total_time = end_time_total - start_time_total
+print(f"Total process time: {total_time:.2f} seconds")
