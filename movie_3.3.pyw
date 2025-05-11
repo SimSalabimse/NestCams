@@ -85,7 +85,7 @@ def normalize_frame(frame):
     hsv_enhanced = cv2.merge((h, s, v))
     return cv2.cvtColor(hsv_enhanced, cv2.COLOR_HSV2BGR)
 
-def process_frame(t, clip, brightness_history):
+def process_frame(t, clip, brightness_history, cancel_event):
     """
     Process a single frame, skipping brightness outliers and normalizing valid frames.
     
@@ -93,10 +93,13 @@ def process_frame(t, clip, brightness_history):
         t (float): Time in seconds.
         clip (VideoClip): Input video clip.
         brightness_history (list): Recent frame brightness values.
+        cancel_event (threading.Event): Event to check for cancellation.
     
     Returns:
-        np.array or None: Normalized frame if within brightness range, else None.
+        np.array or None: Normalized frame if within brightness range and not canceled, else None.
     """
+    if cancel_event.is_set():
+        return None
     frame = clip.get_frame(t)
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     brightness = np.mean(gray)
@@ -112,7 +115,7 @@ def process_frame(t, clip, brightness_history):
     
     return normalize_frame(frame)
 
-def process_clip_frames(clip, fps, progress_callback):
+def process_clip_frames(clip, fps, progress_callback, cancel_event):
     """
     Process clip frames with brightness filtering and normalization, showing progress.
     
@@ -120,6 +123,7 @@ def process_clip_frames(clip, fps, progress_callback):
         clip (VideoClip): Input video clip.
         fps (float): Frames per second.
         progress_callback (function): Updates progress in GUI.
+        cancel_event (threading.Event): Event to check for cancellation.
     
     Returns:
         VideoClip: Processed clip with filtered and normalized frames.
@@ -131,17 +135,27 @@ def process_clip_frames(clip, fps, progress_callback):
     brightness_history = []
     processed_frames = []
     
-    with ThreadPoolExecutor() as executor:
-        futures = {executor.submit(process_frame, t, clip, brightness_history): t for t in frame_times}
+    with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
+        futures = {executor.submit(process_frame, t, clip, brightness_history, cancel_event): t for t in frame_times}
         for i, future in enumerate(as_completed(futures)):
+            if cancel_event.is_set():
+                for f in futures:
+                    f.cancel()
+                return None
             frame = future.result()
             if frame is not None:
                 processed_frames.append(frame)
             progress_callback(i + 1, total_frames)
     
+    if not processed_frames:
+        return None
+    
     def make_frame(t):
         frame_index = int(t * fps)
-        return processed_frames[frame_index] if frame_index < len(processed_frames) else processed_frames[-1]
+        if frame_index < len(processed_frames):
+            return processed_frames[frame_index]
+        else:
+            return processed_frames[-1] if processed_frames else np.zeros((clip.h, clip.w, 3), dtype='uint8')
     
     return VideoClip(make_frame, duration=duration).set_fps(fps)
 
@@ -246,11 +260,15 @@ class VideoProcessorApp:
                 self.queue.put(("task_start", f"Processing Segment {segment_index + 1}", task_share))
                 
                 def progress_callback(processed, total):
+                    if self.cancel_event.is_set():
+                        return
                     progress = (processed / total) * task_share
                     self.queue.put(("progress", progress, 0))
                 
-                normalized_clip = process_clip_frames(clip, fps, progress_callback).fx(vfx.fadein, 0.5).fx(vfx.fadeout, 0.5)
-                adjusted_clips.append(normalized_clip)
+                normalized_clip = process_clip_frames(clip, fps, progress_callback, self.cancel_event)
+                if normalized_clip is None:
+                    break
+                adjusted_clips.append(normalized_clip.fx(vfx.fadein, 0.5).fx(vfx.fadeout, 0.5))
                 self.queue.put(("task_complete", task_share * (segment_index + 1)))
             
             if self.cancel_event.is_set():
@@ -302,11 +320,13 @@ class VideoProcessorApp:
         motion_scores = [0] * total_seconds
         if total_seconds > 1:
             start_time = time.time()
-            with ThreadPoolExecutor() as executor:
+            with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
                 futures = {executor.submit(compute_frame_motion, t, video_path, threshold): t for t in range(1, total_seconds)}
                 completed_count = 0
                 for future in as_completed(futures):
                     if self.cancel_event.is_set():
+                        for f in futures:
+                            f.cancel()
                         return None
                     t = futures[future]
                     motion_scores[t] = future.result()
