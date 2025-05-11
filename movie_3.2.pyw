@@ -64,24 +64,63 @@ def compute_frame_motion(t, video_path, threshold=30):
 
 def normalize_frame(frame):
     """
-    Normalize brightness of a single frame using CLAHE.
+    Normalize brightness of a single frame using CLAHE and enhance color saturation.
     
     Args:
         frame (np.array): Input frame in BGR format.
     
     Returns:
-        np.array: Normalized frame.
+        np.array: Normalized and color-enhanced frame.
     """
+    # Convert to LAB color space and apply CLAHE to luminance channel
     lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))  # Reduced clipLimit for milder enhancement
     l_clahe = clahe.apply(l)
     lab_clahe = cv2.merge((l_clahe, a, b))
-    return cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
+    frame_clahe = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
+    
+    # Enhance color saturation to restore depth
+    hsv = cv2.cvtColor(frame_clahe, cv2.COLOR_BGR2HSV)
+    h, s, v = cv2.split(hsv)
+    s = (s * 1.2).clip(0, 255).astype('uint8')  # Increase saturation by 20%
+    hsv_enhanced = cv2.merge((h, s, v))
+    return cv2.cvtColor(hsv_enhanced, cv2.COLOR_HSV2BGR)
+
+def create_make_frame(clip):
+    """
+    Create a frame generation function with temporal brightness smoothing.
+    
+    Args:
+        clip (VideoClip): Input video clip.
+    
+    Returns:
+        function: A function that generates normalized frames with smoothed brightness.
+    """
+    brightness_history = []
+    def make_frame(t):
+        frame = clip.get_frame(t)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        brightness = np.mean(gray)
+        
+        # Maintain a history of the last 5 frames' brightness
+        if len(brightness_history) >= 5:
+            brightness_history.pop(0)
+        brightness_history.append(brightness)
+        
+        # Adjust brightness if current frame is an outlier
+        if len(brightness_history) > 1:
+            median_brightness = np.median(brightness_history)
+            if brightness < 0.5 * median_brightness or brightness > 1.5 * median_brightness:
+                factor = median_brightness / brightness
+                frame = (frame.astype(float) * factor).clip(0, 255).astype('uint8')
+        
+        return normalize_frame(frame)
+    return make_frame
 
 def process_clip_frames(clip, fps):
     """
-    Process each frame in the clip to normalize brightness.
+    Process each frame in the clip with temporal brightness smoothing and normalization.
     
     Args:
         clip (VideoClip): Input video clip.
@@ -90,11 +129,8 @@ def process_clip_frames(clip, fps):
     Returns:
         VideoClip: Processed clip with normalized frames.
     """
-    def make_frame(t):
-        frame = clip.get_frame(t)
-        return normalize_frame(frame)
-    
-    return VideoClip(make_frame, duration=clip.duration).set_fps(fps)
+    make_frame_func = create_make_frame(clip)
+    return VideoClip(make_frame_func, duration=clip.duration).set_fps(fps)
 
 class VideoProcessorApp:
     def __init__(self, root):
@@ -192,7 +228,7 @@ class VideoProcessorApp:
         fps = video.fps
         
         try:
-            # Step 2: Extract and normalize clips frame-by-frame
+            # Step 2: Extract and normalize clips frame-by-frame with temporal smoothing
             adjusted_clips = []
             for start, end in segments:
                 clip = video.subclip(start, end)
