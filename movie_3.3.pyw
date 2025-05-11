@@ -9,6 +9,7 @@ import time
 import threading
 import queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import bisect
 
 def find_motion_segments(motion_scores, threshold=10000, min_segment_length=5, merge_gap=1):
     """
@@ -85,77 +86,68 @@ def normalize_frame(frame):
     hsv_enhanced = cv2.merge((h, s, v))
     return cv2.cvtColor(hsv_enhanced, cv2.COLOR_HSV2BGR)
 
-def process_frame(t, clip, brightness_history, cancel_event):
-    """
-    Process a single frame, skipping brightness outliers and normalizing valid frames.
-    
-    Args:
-        t (float): Time in seconds.
-        clip (VideoClip): Input video clip.
-        brightness_history (list): Recent frame brightness values.
-        cancel_event (threading.Event): Event to check for cancellation.
-    
-    Returns:
-        np.array or None: Normalized frame if within brightness range and not canceled, else None.
-    """
-    if cancel_event.is_set():
-        return None
+def compute_brightness(t, clip):
+    """Compute the brightness of a frame at time t."""
     frame = clip.get_frame(t)
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    brightness = np.mean(gray)
-    
-    if len(brightness_history) > 1:
-        median_brightness = np.median(brightness_history)
-        if brightness < 0.5 * median_brightness or brightness > 1.5 * median_brightness:
-            return None
-    
-    if len(brightness_history) >= 5:
-        brightness_history.pop(0)
-    brightness_history.append(brightness)
-    
-    return normalize_frame(frame)
+    return np.mean(gray)
 
 def process_clip_frames(clip, fps, progress_callback, cancel_event):
-    """
-    Process clip frames with brightness filtering and normalization, showing progress.
-    
-    Args:
-        clip (VideoClip): Input video clip.
-        fps (float): Frames per second.
-        progress_callback (function): Updates progress in GUI.
-        cancel_event (threading.Event): Event to check for cancellation.
-    
-    Returns:
-        VideoClip: Processed clip with filtered and normalized frames.
-    """
+    """Process clip frames with brightness filtering and normalization, showing progress."""
     duration = clip.duration
     frame_times = [t for t in np.arange(0, duration, 1 / fps)]
     total_frames = len(frame_times)
     
-    brightness_history = []
-    processed_frames = []
-    
+    # Step 1: Compute brightness for all frames in parallel
+    brightnesses = [None] * total_frames
     with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
-        futures = {executor.submit(process_frame, t, clip, brightness_history, cancel_event): t for t in frame_times}
-        for i, future in enumerate(as_completed(futures)):
+        futures = {executor.submit(compute_brightness, t, clip): i for i, t in enumerate(frame_times)}
+        for future in as_completed(futures):
             if cancel_event.is_set():
                 for f in futures:
                     f.cancel()
                 return None
-            frame = future.result()
-            if frame is not None:
-                processed_frames.append(frame)
-            progress_callback(i + 1, total_frames)
+            i = futures[future]
+            brightnesses[i] = future.result()
     
-    if not processed_frames:
-        return None
+    # Step 2: Decide which frames to keep based on brightness history
+    kept_times = []
+    brightness_history = []
+    for t, brightness in zip(frame_times, brightnesses):
+        if len(brightness_history) > 1:
+            median_brightness = np.median(brightness_history)
+            if brightness < 0.5 * median_brightness or brightness > 1.5 * median_brightness:
+                continue  # Discard this frame
+        kept_times.append(t)
+        if len(brightness_history) >= 5:
+            brightness_history.pop(0)
+        brightness_history.append(brightness)
     
+    if not kept_times:
+        return None  # No frames kept
+    
+    # Step 3: Normalize the kept frames in parallel
+    processed_frames = [None] * len(kept_times)
+    with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
+        futures = {executor.submit(normalize_frame, clip.get_frame(t)): i for i, t in enumerate(kept_times)}
+        for future in as_completed(futures):
+            if cancel_event.is_set():
+                for f in futures:
+                    f.cancel()
+                return None
+            i = futures[future]
+            processed_frames[i] = future.result()
+            progress_callback(i + 1, len(kept_times))
+    
+    # Step 4: Create the VideoClip
     def make_frame(t):
-        frame_index = int(t * fps)
-        if frame_index < len(processed_frames):
-            return processed_frames[frame_index]
+        if not kept_times:
+            return np.zeros((clip.h, clip.w, 3), dtype='uint8')
+        idx = bisect.bisect_right(kept_times, t)
+        if idx == 0:
+            return processed_frames[0]
         else:
-            return processed_frames[-1] if processed_frames else np.zeros((clip.h, clip.w, 3), dtype='uint8')
+            return processed_frames[idx - 1]
     
     return VideoClip(make_frame, duration=duration).set_fps(fps)
 
