@@ -2,8 +2,7 @@ import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 import cv2
 import numpy as np
-from moviepy.editor import VideoFileClip, concatenate_videoclips
-from scipy.ndimage import gaussian_filter1d  # For smoothing brightness levels
+from moviepy.editor import VideoFileClip, concatenate_videoclips, vfx
 import os
 import time
 import threading
@@ -161,56 +160,41 @@ class VideoProcessorApp:
         base, ext = os.path.splitext(self.input_file)
         output_files = {}
         video = VideoFileClip(self.input_file)
-        cap = cv2.VideoCapture(self.input_file)
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30
         
         try:
-            # Extract and adjust frames from motion segments
-            all_frames = []
+            # Extract clips and calculate average brightness
+            clips = []
             brightness_levels = []
-            frame_times = []
+            cap = cv2.VideoCapture(self.input_file)
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30
             
             for start, end in segments:
-                for t in range(start, end):
-                    if self.cancel_event.is_set():
-                        break
+                clip = video.subclip(start, end)
+                # Sample brightness from a few frames in the segment
+                segment_brightness = []
+                for t in range(start, end, max(1, (end - start) // 5)):  # Sample up to 5 frames
                     cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000 / fps)
                     ret, frame = cap.read()
-                    if not ret:
-                        continue
-                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                    brightness = np.mean(gray)
-                    brightness_levels.append(brightness)
-                    all_frames.append(frame)
-                    frame_times.append((start, end))
+                    if ret:
+                        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                        segment_brightness.append(np.mean(gray))
+                avg_brightness = np.mean(segment_brightness) if segment_brightness else 100
+                brightness_levels.append(avg_brightness)
+                clips.append(clip)
+            cap.release()
             
-            if self.cancel_event.is_set():
-                self.queue.put(("canceled",))
-                return
+            # Target brightness: median of segment averages
+            target_brightness = np.median(brightness_levels)
             
-            # Smooth brightness levels
-            smoothed_brightness = self.smooth_brightness(brightness_levels)
-            
-            # Adjust frames
-            adjusted_frames = []
-            for frame, target_brightness in zip(all_frames, smoothed_brightness):
-                adjusted_frame = self.adjust_exposure(frame, target_brightness)
-                adjusted_frames.append(adjusted_frame)
-            
-            # Reconstruct clips from adjusted frames
-            clips = []
-            frame_idx = 0
-            for start, end in segments:
-                segment_frames = adjusted_frames[frame_idx:frame_idx + (end - start)]
-                frame_idx += end - start
-                if segment_frames:
-                    # Write frames to a temporary video clip
-                    temp_file = f"temp_{start}_{end}.mp4"
-                    out = cv2.VideoWriter(temp_file, cv2.VideoWriter_fourcc(*'mp4v'), fps, (segment_frames[0].shape[1], segment_frames[0].shape[0]))
-                    for frame in segment_frames:
-                        out.write(frame)
-                    out.release()
-                    clips.append(VideoFileClip(temp_file))
+            # Adjust clip brightness
+            adjusted_clips = []
+            for clip, brightness in zip(clips, brightness_levels):
+                if brightness > 0:
+                    factor = min(max(target_brightness / brightness, 0.5), 2.0)  # Limit adjustment range
+                    adjusted_clip = clip.fx(vfx.colorx, factor)
+                    adjusted_clips.append(adjusted_clip)
+                else:
+                    adjusted_clips.append(clip)
             
             # Process each selected video
             for i, (task_name, desired_duration) in enumerate(selected_videos, start=1):
@@ -219,10 +203,10 @@ class VideoProcessorApp:
                 start_progress = i * task_share
                 self.queue.put(("task_start", task_name, start_progress))
                 
-                total_duration = sum(end - start for start, end in segments) / fps
+                total_duration = sum(end - start for start, end in segments)
                 if total_duration > 0:
                     speed_factor = total_duration / desired_duration
-                    concatenated = concatenate_videoclips(clips)
+                    concatenated = concatenate_videoclips(adjusted_clips)
                     sped_up = concatenated.speedx(speed_factor)
                     output_file = f"{base}_{task_name.split()[1]}{ext}"
                     sped_up.write_videofile(output_file, verbose=False, logger=None)
@@ -230,18 +214,14 @@ class VideoProcessorApp:
                 
                 self.queue.put(("task_complete", (i + 1) * task_share))
             
-            # Clean up temporary files
-            for clip in clips:
-                clip.close()
-                if os.path.exists(clip.filename):
-                    os.remove(clip.filename)
-            
             if self.cancel_event.is_set():
                 self.queue.put(("canceled",))
             else:
                 self.queue.put(("complete", output_files.get("Generate 60s Video"), output_files.get("Generate 12min Video")))
+        except Exception as e:
+            self.queue.put(("canceled",))
+            print(f"Error during processing: {e}")
         finally:
-            cap.release()
             video.close()
     
     def compute_motion_scores_with_progress(self, video_path, task_share, start_progress, threshold=30):
@@ -249,10 +229,8 @@ class VideoProcessorApp:
         if not cap.isOpened():
             return None
         
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps <= 0:
-            fps = 30
-        total_seconds = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) / fps) if fps > 0 else 0
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        total_seconds = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) / fps)
         if total_seconds <= 0:
             cap.release()
             return None
@@ -284,25 +262,11 @@ class VideoProcessorApp:
             elapsed_time = time.time() - start_time
             if processed_seconds > 0:
                 time_per_second = elapsed_time / processed_seconds
-                remaining_seconds = (total_seconds - processed_seconds) * time_per_second
+                remaining_seconds = max((total_seconds - processed_seconds) * time_per_second, 0)
                 self.queue.put(("progress", progress, int(remaining_seconds // 60)))
         
         cap.release()
         return motion_scores
-    
-    def adjust_exposure(self, frame, target_brightness):
-        """Adjust the exposure of a frame to match the target brightness."""
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        current_brightness = np.mean(gray)
-        if current_brightness == 0:
-            return frame
-        scale_factor = target_brightness / current_brightness
-        adjusted_frame = cv2.convertScaleAbs(frame, alpha=scale_factor, beta=0)
-        return adjusted_frame
-    
-    def smooth_brightness(self, brightness_levels, sigma=5):
-        """Smooth brightness levels using a Gaussian filter."""
-        return gaussian_filter1d(brightness_levels, sigma=sigma)
     
     def cancel_processing(self):
         self.cancel_event.set()
