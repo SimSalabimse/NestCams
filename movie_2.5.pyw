@@ -238,7 +238,7 @@ class VideoProcessorApp:
         try:
             while True:
                 message = self.queue.get_nowait()
-                self.handle_message(message)
+                self.handle_message(message) 
         except queue.Empty:
             pass
         self.root.after(100, self.process_queue)
