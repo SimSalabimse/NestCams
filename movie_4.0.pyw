@@ -9,7 +9,7 @@ import threading
 import queue
 
 # Version number
-VERSION = "2.0.1"  # Updated to reflect changes
+VERSION = "2.0.2"  # Updated to reflect progress fixes
 
 def compute_motion_score(prev_frame, current_frame, threshold=30):
     """Compute motion score between two frames."""
@@ -35,8 +35,8 @@ def normalize_frame(frame):
     hsv_enhanced = cv2.merge((h, s, v))
     return cv2.cvtColor(hsv_enhanced, cv2.COLOR_HSV2BGR)
 
-def process_video_two_pass(input_path, output_path, desired_duration, motion_threshold=5000, sample_interval=10, buffer_size=5):
-    """Process video in two passes: motion detection with flash removal then frame writing."""
+def process_video_two_pass(input_path, output_path, desired_duration, motion_threshold=5000, sample_interval=10, buffer_size=5, progress_callback=None):
+    """Process video in two passes with progress updates."""
     # First Pass: Motion Detection and Flash Removal
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
@@ -57,9 +57,11 @@ def process_video_two_pass(input_path, output_path, desired_duration, motion_thr
     exclude_indices = set()
     prev_frame = None
     
+    print(f"Starting first pass: {total_frames} frames to process")
     for frame_idx in range(total_frames):
         ret, frame = cap.read()
         if not ret:
+            print(f"First pass stopped at frame {frame_idx}: failed to read frame")
             break
         brightness = np.mean(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
         if frame_idx % sample_interval == 0:
@@ -73,11 +75,9 @@ def process_video_two_pass(input_path, output_path, desired_duration, motion_thr
                     in_motion = False
                     if current_segment_brightnesses:
                         median_brightness = np.median(current_segment_brightnesses)
-                        # Check first buffer_size frames for flash removal
                         for i in range(min(buffer_size, len(current_segment_brightnesses))):
                             if abs(current_segment_brightnesses[i] - median_brightness) / median_brightness > 0.2:
                                 exclude_indices.add(include_indices[-len(current_segment_brightnesses) + i])
-                        # Check last buffer_size frames for flash removal
                         for i in range(max(0, len(current_segment_brightnesses) - buffer_size), len(current_segment_brightnesses)):
                             if abs(current_segment_brightnesses[i] - median_brightness) / median_brightness > 0.2:
                                 exclude_indices.add(include_indices[-len(current_segment_brightnesses) + i])
@@ -91,8 +91,11 @@ def process_video_two_pass(input_path, output_path, desired_duration, motion_thr
             if in_motion:
                 include_indices.append(frame_idx)
                 current_segment_brightnesses.append(brightness)
+        
+        # Progress update for first pass (0-50%)
+        if progress_callback and frame_idx % 100 == 0:  # Update every 100 frames to avoid GUI lag
+            progress_callback(frame_idx / total_frames * 50)
     
-    # Handle last segment if still in motion
     if in_motion and current_segment_brightnesses:
         median_brightness = np.median(current_segment_brightnesses)
         for i in range(min(buffer_size, len(current_segment_brightnesses))):
@@ -103,33 +106,44 @@ def process_video_two_pass(input_path, output_path, desired_duration, motion_thr
                 exclude_indices.add(include_indices[-len(current_segment_brightnesses) + i])
     
     cap.release()
+    print(f"First pass complete: {len(include_indices)} frames selected initially")
     
-    # Filter include_indices to remove excluded frames
+    # Filter include_indices
     final_include_indices = [idx for idx in include_indices if idx not in exclude_indices]
+    print(f"After filtering: {len(final_include_indices)} frames remain")
     
     if not final_include_indices:
         return "No frames selected after filtering"
     
-    # Adjust to fit desired duration
+    # Adjust to desired duration
     target_frames = int(desired_duration * fps)
     if len(final_include_indices) > target_frames:
         step = len(final_include_indices) / target_frames
         final_include_indices = [final_include_indices[int(i * step)] for i in range(target_frames)]
+    print(f"Adjusted to {len(final_include_indices)} frames for {desired_duration}s")
     
     # Second Pass: Write selected frames
     cap = cv2.VideoCapture(input_path)
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
     
-    for frame_idx in final_include_indices:
+    print("Starting second pass")
+    for idx, frame_idx in enumerate(final_include_indices):
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = cap.read()
         if ret:
             normalized_frame = normalize_frame(frame)
             out.write(normalized_frame)
+        else:
+            print(f"Second pass warning: failed to read frame {frame_idx}")
+        
+        # Progress update for second pass (50-100%)
+        if progress_callback and idx % 10 == 0:  # Update every 10 frames
+            progress_callback(50 + (idx / len(final_include_indices) * 50))
     
     cap.release()
     out.release()
+    print("Second pass complete")
     
     return None if len(final_include_indices) > 0 else "No frames written"
 
@@ -201,7 +215,7 @@ class VideoProcessorApp:
             self.worker_thread.start()
     
     def process_video_thread(self):
-        """Process video in a background thread."""
+        """Process video in a background thread with progress updates."""
         selected_videos = []
         if self.generate_60s.get():
             selected_videos.append(("Generate 60s Video", 60))
@@ -218,8 +232,11 @@ class VideoProcessorApp:
             output_file = f"{base}_{task_name.split()[1]}{ext}"
             self.queue.put(("task_start", task_name, 0))
             
+            def progress_callback(progress):
+                self.queue.put(("progress", progress, 0))  # Time estimate TBD
+            
             start_time = time.time()
-            error = process_video_two_pass(self.input_file, output_file, desired_duration)
+            error = process_video_two_pass(self.input_file, output_file, desired_duration, progress_callback=progress_callback)
             
             if error:
                 self.queue.put(("canceled", error))
