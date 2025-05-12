@@ -13,7 +13,7 @@ import bisect
 import psutil  # For memory usage checks
 
 # Version number
-VERSION = "1.0.0"
+VERSION = "3.4.0"
 
 def find_motion_segments(motion_scores, threshold=10000, min_segment_length=5, merge_gap=1):
     """
@@ -151,7 +151,7 @@ def process_clip_frames(clip, fps, progress_callback, cancel_event, max_workers)
 
 class VideoProcessorApp:
     def __init__(self, root):
-        """Initialize GUI and app state."""
+        """Initialize GUI and app state with debugging."""
         try:
             print("Initializing VideoProcessorApp")
             self.root = root
@@ -207,7 +207,7 @@ class VideoProcessorApp:
             raise
     
     def browse_file(self):
-        """Handle file selection and start processing."""
+        """Handle file selection and start processing with error handling."""
         try:
             self.input_file = filedialog.askopenfilename(filetypes=[("Video files", "*.mp4 *.avi *.mkv")])
             if self.input_file:
@@ -230,7 +230,7 @@ class VideoProcessorApp:
             self.queue.put(("canceled", f"Error: {e}"))
     
     def process_video_thread(self):
-        """Process video in a background thread."""
+        """Process video in a background thread with error handling."""
         try:
             selected_videos = []
             if self.generate_60s.get():
@@ -282,7 +282,7 @@ class VideoProcessorApp:
                 
                 if self.cancel_event.is_set():
                     self.queue.put(("canceled", "Processing canceled by user"))
-                    return
+                return
                 
                 for i, (task_name, desired_duration) in enumerate(selected_videos, start=1):
                     if self.cancel_event.is_set():
@@ -317,7 +317,7 @@ class VideoProcessorApp:
     
     def compute_motion_scores_with_progress(self, video_path, task_share, start_progress, threshold=30):
         """
-        Compute motion scores with progress updates using parallel processing.
+        Compute motion scores with progress updates using parallel processing and error handling.
         """
         try:
             cap = cv2.VideoCapture(video_path)
