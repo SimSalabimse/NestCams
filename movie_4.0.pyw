@@ -9,7 +9,7 @@ import threading
 import queue
 
 # Version number
-VERSION = "2.0.2"  # Updated to reflect progress fixes
+VERSION = "2.0.3"  # Updated for new features
 
 def compute_motion_score(prev_frame, current_frame, threshold=30):
     """Compute motion score between two frames."""
@@ -35,8 +35,8 @@ def normalize_frame(frame):
     hsv_enhanced = cv2.merge((h, s, v))
     return cv2.cvtColor(hsv_enhanced, cv2.COLOR_HSV2BGR)
 
-def process_video_two_pass(input_path, output_path, desired_duration, motion_threshold=5000, sample_interval=10, buffer_size=5, progress_callback=None):
-    """Process video in two passes with progress updates."""
+def process_video_two_pass(input_path, output_path, desired_duration, motion_threshold=5000, sample_interval=10, buffer_size=5, progress_callback=None, cancel_event=None):
+    """Process video in two passes with progress updates and cancellation support."""
     # First Pass: Motion Detection and Flash Removal
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
@@ -59,6 +59,9 @@ def process_video_two_pass(input_path, output_path, desired_duration, motion_thr
     
     print(f"Starting first pass: {total_frames} frames to process")
     for frame_idx in range(total_frames):
+        if cancel_event and cancel_event.is_set():
+            cap.release()
+            return "Processing canceled by user"
         ret, frame = cap.read()
         if not ret:
             print(f"First pass stopped at frame {frame_idx}: failed to read frame")
@@ -93,8 +96,8 @@ def process_video_two_pass(input_path, output_path, desired_duration, motion_thr
                 current_segment_brightnesses.append(brightness)
         
         # Progress update for first pass (0-50%)
-        if progress_callback and frame_idx % 100 == 0:  # Update every 100 frames to avoid GUI lag
-            progress_callback(frame_idx / total_frames * 50)
+        if progress_callback and frame_idx % 100 == 0:
+            progress_callback(frame_idx / total_frames * 50, frame_idx, total_frames)
     
     if in_motion and current_segment_brightnesses:
         median_brightness = np.median(current_segment_brightnesses)
@@ -129,6 +132,10 @@ def process_video_two_pass(input_path, output_path, desired_duration, motion_thr
     
     print("Starting second pass")
     for idx, frame_idx in enumerate(final_include_indices):
+        if cancel_event and cancel_event.is_set():
+            cap.release()
+            out.release()
+            return "Processing canceled by user"
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = cap.read()
         if ret:
@@ -138,8 +145,8 @@ def process_video_two_pass(input_path, output_path, desired_duration, motion_thr
             print(f"Second pass warning: failed to read frame {frame_idx}")
         
         # Progress update for second pass (50-100%)
-        if progress_callback and idx % 10 == 0:  # Update every 10 frames
-            progress_callback(50 + (idx / len(final_include_indices) * 50))
+        if progress_callback and idx % 10 == 0:
+            progress_callback(50 + (idx / len(final_include_indices) * 50), idx, len(final_include_indices))
     
     cap.release()
     out.release()
@@ -194,6 +201,7 @@ class VideoProcessorApp:
         self.input_file = None
         self.cancel_event = threading.Event()
         self.queue = queue.Queue()
+        self.start_time = None
         self.root.after(100, self.process_queue)
     
     def browse_file(self):
@@ -211,6 +219,7 @@ class VideoProcessorApp:
             self.browse_button.configure(state="disabled")
             self.cancel_button.configure(state="normal")
             self.cancel_event.clear()
+            self.start_time = time.time()
             self.worker_thread = threading.Thread(target=self.process_video_thread)
             self.worker_thread.start()
     
@@ -232,22 +241,19 @@ class VideoProcessorApp:
             output_file = f"{base}_{task_name.split()[1]}{ext}"
             self.queue.put(("task_start", task_name, 0))
             
-            def progress_callback(progress):
-                self.queue.put(("progress", progress, 0))  # Time estimate TBD
+            def progress_callback(progress, current_frame, total_frames):
+                percentage = (current_frame / total_frames) * 100 if total_frames > 0 else 0
+                self.queue.put(("progress", progress, percentage))
             
-            start_time = time.time()
-            error = process_video_two_pass(self.input_file, output_file, desired_duration, progress_callback=progress_callback)
+            error = process_video_two_pass(self.input_file, output_file, desired_duration, progress_callback=progress_callback, cancel_event=self.cancel_event)
             
             if error:
                 self.queue.put(("canceled", error))
                 break
             else:
                 output_files[task_name] = output_file
-                elapsed = time.time() - start_time
-                self.queue.put(("progress", 100, int(elapsed // 60)))
-        
-        if not self.cancel_event.is_set():
-            self.queue.put(("complete", output_files.get("Generate 60s Video"), output_files.get("Generate 12min Video")))
+                elapsed = time.time() - self.start_time
+                self.queue.put(("complete", output_files.get("Generate 60s Video"), output_files.get("Generate 12min Video"), elapsed))
     
     def cancel_processing(self):
         """Stop processing by setting cancel event."""
@@ -271,15 +277,15 @@ class VideoProcessorApp:
             self.progress.set(progress / 100)
             self.time_label.configure(text="Processing...")
         elif message[0] == "progress":
-            progress_value, elapsed_time = message[1:]
+            progress_value, percentage = message[1:]
             self.progress.set(progress_value / 100)
-            self.time_label.configure(text=f"Elapsed Time: {elapsed_time} minutes")
+            self.time_label.configure(text=f"Processing: {percentage:.2f}% complete")
         elif message[0] == "complete":
-            output_60s, output_12min = message[1:]
+            output_60s, output_12min, elapsed = message[1:]
             self.output_60s.configure(text=f"60s Video: {output_60s if output_60s else 'Not generated'}")
             self.output_12min.configure(text=f"12min Video: {output_12min if output_12min else 'Not generated'}")
             self.current_task_label.configure(text="Current Task: N/A")
-            self.time_label.configure(text="Process Complete")
+            self.time_label.configure(text=f"Process Complete in {elapsed:.2f} seconds")
             self.reset_ui()
         elif message[0] == "canceled":
             reason = message[1]
