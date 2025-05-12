@@ -11,7 +11,7 @@ import queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import bisect
 
-def find_motion_segments(motion_scores, threshold=10000, min_segment_length=5, merge_gap=1):
+def find_motion_segments(motion_scores, threshold=5000, min_segment_length=3, merge_gap=2):
     """
     Identify continuous segments with motion above the threshold.
     """
@@ -69,14 +69,14 @@ def normalize_frame(frame):
     """
     lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(8, 8))
     l_clahe = clahe.apply(l)
     lab_clahe = cv2.merge((l_clahe, a, b))
     frame_clahe = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
     
     hsv = cv2.cvtColor(frame_clahe, cv2.COLOR_BGR2HSV)
     h, s, v = cv2.split(hsv)
-    s = (s * 1.2).clip(0, 255).astype('uint8')
+    s = (s * 1.1).clip(0, 255).astype('uint8')
     hsv_enhanced = cv2.merge((h, s, v))
     return cv2.cvtColor(hsv_enhanced, cv2.COLOR_HSV2BGR)
 
@@ -117,7 +117,7 @@ def process_clip_frames(clip, fps, progress_callback, cancel_event):
         for t, brightness in zip(frame_times, brightnesses):
             if len(brightness_history) > 1:
                 median_brightness = np.median(brightness_history)
-                if brightness < 0.5 * median_brightness or brightness > 1.5 * median_brightness:
+                if brightness < 0.3 * median_brightness or brightness > 1.7 * median_brightness:
                     continue
             kept_times.append(t)
             if len(brightness_history) >= 5:
@@ -159,13 +159,12 @@ def process_clip_frames(clip, fps, progress_callback, cancel_event):
 class VideoProcessorApp:
     def __init__(self, root):
         """Initialize GUI and app state."""
-        self.version = "1.0.0"  # Define version number
+        self.version = "1.0.1"  # Updated version number
         self.root = root
         self.root.title(f"Bird Box Video Processor v{self.version}")
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("dark-blue")
         
-        # Add version label
         self.version_label = ctk.CTkLabel(root, text=f"Version: {self.version}")
         self.version_label.pack(pady=5)
         
@@ -218,7 +217,6 @@ class VideoProcessorApp:
             if not self.generate_60s.get() and not self.generate_12min.get():
                 messagebox.showwarning("Warning", "Please enable at least one video to generate.")
                 return
-            # Reset output labels to indicate processing has started
             self.output_60s.configure(text="60s Video: Processing")
             self.output_12min.configure(text="12min Video: Processing")
             self.switch_60s.configure(state="disabled")
@@ -284,7 +282,7 @@ class VideoProcessorApp:
                         self.queue.put(("canceled", "User Cancellation"))
                         break
                     else:
-                        adjusted_clips.append(normalized_clip.fx(vfx.fadein, 0.5).fx(vfx.fadeout, 0.5))
+                        adjusted_clips.append(normalized_clip.fx(vfx.fadein, 1.0).fx(vfx.fadeout, 1.0))
                 self.queue.put(("task_complete", task_share * (segment_index + 1)))
             
             if not self.cancel_event.is_set():
@@ -302,7 +300,6 @@ class VideoProcessorApp:
                         sped_up = concatenated.speedx(speed_factor)
                         output_file = f"{base}_{task_name.split()[1]}{ext}"
                         
-                        # Check if output file exists and ask for confirmation
                         if os.path.exists(output_file):
                             confirm = messagebox.askokcancel("File Exists", f"File {output_file} already exists. Overwrite?")
                             if not confirm:
