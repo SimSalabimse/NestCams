@@ -19,7 +19,7 @@ def compute_motion_score(prev_frame, current_frame, threshold=30):
     prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
     curr_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
     diff = cv2.absdiff(prev_gray, curr_gray)
-    return np.sum(diff > threshold)
+    return np.sum(diff > threshold, dtype=np.uint32)  # Avoid float64 accumulation
 
 def is_white_or_black_frame(frame, white_threshold=200, black_threshold=50):
     """Check if frame is predominantly white or black."""
@@ -28,21 +28,24 @@ def is_white_or_black_frame(frame, white_threshold=200, black_threshold=50):
     return mean_brightness > white_threshold or mean_brightness < black_threshold
 
 def normalize_frame(frame):
-    """Normalize frame brightness and enhance saturation."""
-    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(8, 8))
-    l_clahe = clahe.apply(l)
-    lab_clahe = cv2.merge((l_clahe, a, b))
-    frame_clahe = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
-    
-    hsv = cv2.cvtColor(frame_clahe, cv2.COLOR_BGR2HSV)
-    h, s, v = cv2.split(hsv)
-    s = (s.astype('float32') * 1.1).clip(0, 255).astype('uint8')
-    hsv_enhanced = cv2.merge((h, s, v))
-    return cv2.cvtColor(hsv_enhanced, cv2.COLOR_HSV2BGR)
+    """Normalize frame brightness and enhance saturation with optimized memory usage."""
+    try:
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=1.0, tileGridSize=(8, 8))
+        l_clahe = clahe.apply(l)
+        lab_clahe = cv2.merge((l_clahe, a, b))
+        frame_clahe = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
+        
+        hsv = cv2.cvtColor(frame_clahe, cv2.COLOR_BGR2HSV)
+        h, s, v = cv2.split(hsv)
+        s = (s.astype('float32') * 1.1).clip(0, 255).astype('uint8')
+        hsv_enhanced = cv2.merge((h, s, v))
+        return cv2.cvtColor(hsv_enhanced, cv2.COLOR_HSV2BGR)
+    except MemoryError:
+        return None  # Handle memory error gracefully
 
-def process_video_multi_pass(input_path, output_path, desired_duration, motion_threshold=5000, sample_interval=10, progress_callback=None, cancel_event=None):
+def process_video_multi_pass(input_path, output_path, desired_duration, motion_threshold=3000, sample_interval=5, progress_callback=None, cancel_event=None):
     """Process video in multiple passes: longer video, filter white/black, trim."""
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
@@ -97,7 +100,9 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
     
     cap.release()
     if not include_indices:
-        return "No frames selected in first pass"
+        # Fallback: Include evenly spaced frames if no motion detected
+        include_indices = [i for i in range(0, min(total_frames, intermediate_frames), max(1, total_frames // intermediate_frames))]
+        print("Warning: No motion detected, using fallback frames")
     
     # Write intermediate video
     cap = cv2.VideoCapture(input_path)
@@ -164,6 +169,12 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
         ret, frame = cap.read()
         if ret:
             normalized_frame = normalize_frame(frame)
+            if normalized_frame is None:
+                print("Memory error during frame normalization")
+                cap.release()
+                out.release()
+                os.remove(temp_path2)
+                return "Memory error during processing"
             out.write(normalized_frame)
         
         # Progress for Pass 3 (66-100%)
@@ -307,18 +318,24 @@ class VideoProcessorApp:
             self.time_label.configure(text=f"Est. Time Remaining: {remaining_min:.2f} min ({percentage:.2f}%)")
         elif message[0] == "complete":
             output_60s, output_12min, elapsed = message[1:]
-            elapsed_min = elapsed / 60
+            minutes = int(elapsed // 60)
+            seconds = int(elapsed % 60)
+            time_str = f"{minutes} min {seconds} sec"
             self.output_60s.configure(text=f"60s Video: {output_60s if output_60s else 'Not generated'}")
             self.output_12min.configure(text=f"12min Video: {output_12min if output_12min else 'Not generated'}")
             self.current_task_label.configure(text="Current Task: N/A")
-            self.time_label.configure(text=f"Process Complete in {elapsed_min:.2f} minutes")
+            self.time_label.configure(text=f"Process Complete in {time_str}")
             self.reset_ui()
         elif message[0] == "canceled":
             reason = message[1]
+            elapsed = time.time() - self.start_time if self.start_time else 0
+            minutes = int(elapsed // 60)
+            seconds = int(elapsed % 60)
+            time_str = f"{minutes} min {seconds} sec"
             self.output_60s.configure(text=f"60s Video: Canceled - {reason}")
             self.output_12min.configure(text=f"12min Video: Canceled - {reason}")
             self.current_task_label.configure(text="Current Task: N/A")
-            self.time_label.configure(text="Process Canceled")
+            self.time_label.configure(text=f"Process Canceled in {time_str}")
             self.reset_ui()
     
     def reset_ui(self):
