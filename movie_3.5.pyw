@@ -65,7 +65,7 @@ def compute_frame_motion(t, video_path, threshold=30):
 
 def normalize_frame(frame):
     """
-    Normalize brightness of a single frame using CLAHE and enhance color saturation.
+    Normalize brightness of a single frame using CLAHE and enhance color saturation with optimized memory usage.
     """
     lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
@@ -76,7 +76,8 @@ def normalize_frame(frame):
     
     hsv = cv2.cvtColor(frame_clahe, cv2.COLOR_BGR2HSV)
     h, s, v = cv2.split(hsv)
-    s = (s * 1.1).clip(0, 255).astype('uint8')
+    # Use float32 to reduce memory usage from float64
+    s = (s.astype('float32') * 1.1).clip(0, 255).astype('uint8')
     hsv_enhanced = cv2.merge((h, s, v))
     return cv2.cvtColor(hsv_enhanced, cv2.COLOR_HSV2BGR)
 
@@ -87,7 +88,7 @@ def compute_brightness(t, clip):
     return np.mean(gray)
 
 def process_clip_frames(clip, fps, progress_callback, cancel_event):
-    """Process clip frames with brightness filtering and normalization, showing progress."""
+    """Process clip frames with enhanced brightness filtering and normalization, showing progress."""
     try:
         file_size = os.path.getsize(clip.filename) / (1024 * 1024)  # in MB
         if file_size > 1000:
@@ -111,13 +112,14 @@ def process_clip_frames(clip, fps, progress_callback, cancel_event):
                 i = futures[future]
                 brightnesses[i] = future.result()
         
-        # Step 2: Decide which frames to keep based on brightness history
+        # Step 2: Decide which frames to keep based on brightness history with absolute threshold
         kept_times = []
         brightness_history = []
         for t, brightness in zip(frame_times, brightnesses):
             if len(brightness_history) > 1:
                 median_brightness = np.median(brightness_history)
-                if brightness < 0.3 * median_brightness or brightness > 1.7 * median_brightness:
+                # Enhanced filtering: relative thresholds plus absolute upper limit for white frames
+                if brightness < 0.3 * median_brightness or brightness > 1.7 * median_brightness or brightness > 200:
                     continue
             kept_times.append(t)
             if len(brightness_history) >= 5:
@@ -159,7 +161,7 @@ def process_clip_frames(clip, fps, progress_callback, cancel_event):
 class VideoProcessorApp:
     def __init__(self, root):
         """Initialize GUI and app state."""
-        self.version = "1.0.1"  # Updated version number
+        self.version = "1.0.1"
         self.root = root
         self.root.title(f"Bird Box Video Processor v{self.version}")
         ctk.set_appearance_mode("dark")
