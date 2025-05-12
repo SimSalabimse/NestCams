@@ -10,7 +10,7 @@ import queue
 from moviepy.editor import VideoFileClip, concatenate_videoclips
 
 # Version number
-VERSION = "2.1.2"  # Optimized for 24 FPS, 1920x1080
+VERSION = "2.1.3"  # Improved time estimation and display
 
 # Fixed video properties
 FPS = 24
@@ -62,6 +62,8 @@ def detect_motion_segments(input_path, motion_threshold=3000, sample_interval=10
     in_motion = False
     segment_start = 0
     prev_frame = None
+    start_time = time.time()
+    frame_times = []
     
     for frame_idx in range(0, total_frames, sample_interval):
         if cancel_event and cancel_event.is_set():
@@ -81,9 +83,17 @@ def detect_motion_segments(input_path, motion_threshold=3000, sample_interval=10
                 motion_segments.append((segment_start, frame_idx))
         prev_frame = frame
         
-        if progress_callback and frame_idx % 100 == 0:
+        if frame_idx % 50 == 0:  # Update every 50 frames
+            elapsed = time.time() - start_time
+            frame_times.append(elapsed)
+            if len(frame_times) > 10:
+                frame_times.pop(0)
+            avg_time_per_frame = sum(frame_times) / len(frame_times)
+            remaining_frames = (total_frames - frame_idx) // sample_interval
+            remaining_time = remaining_frames * avg_time_per_frame
             progress = (frame_idx / total_frames) * 33
-            progress_callback(progress, frame_idx, total_frames, 0)
+            if progress_callback:
+                progress_callback(progress, frame_idx, total_frames, remaining_time)
     
     if in_motion:
         motion_segments.append((segment_start, total_frames - 1))
@@ -98,6 +108,8 @@ def create_intermediate_video(input_path, motion_segments, output_path, cancel_e
     out = cv2.VideoWriter(output_path, fourcc, FPS, (FRAME_WIDTH, FRAME_HEIGHT))
     total_motion_frames = sum(end - start + 1 for start, end in motion_segments)
     processed_frames = 0
+    start_time = time.time()
+    frame_times = []
     
     for start, end in motion_segments:
         if cancel_event and cancel_event.is_set():
@@ -111,9 +123,17 @@ def create_intermediate_video(input_path, motion_segments, output_path, cancel_e
                 break
             out.write(frame)
             processed_frames += 1
-            if progress_callback and processed_frames % 100 == 0:
+            if processed_frames % 50 == 0:
+                elapsed = time.time() - start_time
+                frame_times.append(elapsed)
+                if len(frame_times) > 10:
+                    frame_times.pop(0)
+                avg_time_per_frame = sum(frame_times) / len(frame_times)
+                remaining_frames = total_motion_frames - processed_frames
+                remaining_time = remaining_frames * avg_time_per_frame
                 progress = 33 + (processed_frames / total_motion_frames) * 33
-                progress_callback(progress, processed_frames, total_motion_frames, 0)
+                if progress_callback:
+                    progress_callback(progress, processed_frames, total_motion_frames, remaining_time)
     
     cap.release()
     out.release()
@@ -124,6 +144,8 @@ def filter_and_adjust_speed(input_path, output_path, desired_duration, white_thr
     filtered_frames = []
     total_frames = int(clip.duration * FPS)
     frame_count = 0
+    start_time = time.time()
+    frame_times = []
     
     for t in np.arange(0, clip.duration, 1 / FPS):
         if cancel_event and cancel_event.is_set():
@@ -133,9 +155,17 @@ def filter_and_adjust_speed(input_path, output_path, desired_duration, white_thr
         if not is_white_or_black_frame(frame, white_threshold, black_threshold):
             filtered_frames.append(t)
         frame_count += 1
-        if progress_callback and frame_count % 100 == 0:
+        if frame_count % 50 == 0:
+            elapsed = time.time() - start_time
+            frame_times.append(elapsed)
+            if len(frame_times) > 10:
+                frame_times.pop(0)
+            avg_time_per_frame = sum(frame_times) / len(frame_times)
+            remaining_frames = total_frames - frame_count
+            remaining_time = remaining_frames * avg_time_per_frame
             progress = 66 + (frame_count / total_frames) * 34
-            progress_callback(progress, frame_count, total_frames, 0)
+            if progress_callback:
+                progress_callback(progress, frame_count, total_frames, remaining_time)
     
     if not filtered_frames:
         clip.close()
@@ -335,7 +365,7 @@ class VideoProcessorApp:
         cap = cv2.VideoCapture(self.input_file)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
-        estimated_total_time = (total_frames / 10) * 0.01  # Rough estimate: 0.01s per sampled frame
+        estimated_total_time = (total_frames / 10) * 0.01  # Initial rough estimate
         
         for task_name, desired_duration in selected_videos:
             if self.cancel_event.is_set():
@@ -385,7 +415,7 @@ class VideoProcessorApp:
         self.root.after(100, self.process_queue)
     
     def handle_message(self, message):
-        """Handle queue messages to update UI."""
+        """Handle queue messages to update UI with improved time display."""
         if message[0] == "task_start":
             task_name, progress = message[1:]
             self.current_task_label.configure(text=f"Current Task: {task_name}")
@@ -394,8 +424,10 @@ class VideoProcessorApp:
         elif message[0] == "progress":
             progress_value, percentage, remaining = message[1:]
             self.progress.set(progress_value / 100)
-            remaining_min = remaining / 60 if remaining > 0 else 0
-            self.time_label.configure(text=f"Est. Time Remaining: {remaining_min:.2f} min ({percentage:.2f}%)")
+            remaining_min = int(remaining // 60)
+            remaining_sec = int(remaining % 60)
+            time_str = f"{remaining_min} min {remaining_sec} sec"
+            self.time_label.configure(text=f"Est. Time Remaining: {time_str} ({percentage:.2f}%)")
         elif message[0] == "complete":
             output_60s, output_12min, elapsed = message[1:]
             minutes = int(elapsed // 60)
