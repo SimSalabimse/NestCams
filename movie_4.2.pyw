@@ -10,14 +10,21 @@ import queue
 from moviepy.editor import VideoFileClip, concatenate_videoclips
 
 # Version number
-VERSION = "2.1.0"  # Updated for new process
+VERSION = "2.1.2"  # Optimized for 24 FPS, 1920x1080
 
-def compute_motion_score(prev_frame, current_frame, threshold=30):
-    """Compute motion score between two frames."""
+# Fixed video properties
+FPS = 24
+FRAME_WIDTH = 1920
+FRAME_HEIGHT = 1080
+
+def compute_motion_score(prev_frame, current_frame, threshold=30, downscale_factor=0.5):
+    """Compute motion score between downsampled frames."""
     if prev_frame is None or current_frame is None:
         return 0
-    prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
-    curr_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
+    prev_resized = cv2.resize(prev_frame, None, fx=downscale_factor, fy=downscale_factor)
+    curr_resized = cv2.resize(current_frame, None, fx=downscale_factor, fy=downscale_factor)
+    prev_gray = cv2.cvtColor(prev_resized, cv2.COLOR_BGR2GRAY)
+    curr_gray = cv2.cvtColor(curr_resized, cv2.COLOR_BGR2GRAY)
     diff = cv2.absdiff(prev_gray, curr_gray)
     return np.sum(diff > threshold, dtype=np.uint32)
 
@@ -44,37 +51,39 @@ def normalize_frame(frame, clip_limit=1.0, saturation_multiplier=1.1):
     except MemoryError:
         return None
 
-def detect_motion_segments(input_path, motion_threshold=3000, sample_interval=5, cancel_event=None):
-    """Detect all motion segments in the video."""
+def detect_motion_segments(input_path, motion_threshold=3000, sample_interval=10, cancel_event=None, progress_callback=None):
+    """Detect motion segments with progress updates for 24 FPS videos."""
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
         return []
     
-    fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     motion_segments = []
     in_motion = False
     segment_start = 0
     prev_frame = None
     
-    for frame_idx in range(total_frames):
+    for frame_idx in range(0, total_frames, sample_interval):
         if cancel_event and cancel_event.is_set():
             cap.release()
             return []
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = cap.read()
         if not ret:
             break
-        if frame_idx % sample_interval == 0 and prev_frame is not None:
-            motion_score = compute_motion_score(prev_frame, frame)
+        if prev_frame is not None:
+            motion_score = compute_motion_score(prev_frame, frame, downscale_factor=0.5)
             if motion_score > motion_threshold and not in_motion:
                 in_motion = True
                 segment_start = frame_idx
             elif motion_score <= motion_threshold and in_motion:
                 in_motion = False
                 motion_segments.append((segment_start, frame_idx))
-            prev_frame = frame
-        elif in_motion:
-            pass  # Continue segment if in motion
+        prev_frame = frame
+        
+        if progress_callback and frame_idx % 100 == 0:
+            progress = (frame_idx / total_frames) * 33
+            progress_callback(progress, frame_idx, total_frames, 0)
     
     if in_motion:
         motion_segments.append((segment_start, total_frames - 1))
@@ -82,14 +91,13 @@ def detect_motion_segments(input_path, motion_threshold=3000, sample_interval=5,
     cap.release()
     return motion_segments
 
-def create_intermediate_video(input_path, motion_segments, output_path, cancel_event=None):
-    """Create an intermediate video from motion segments."""
+def create_intermediate_video(input_path, motion_segments, output_path, cancel_event=None, progress_callback=None):
+    """Create an intermediate video from motion segments for 24 FPS videos."""
     cap = cv2.VideoCapture(input_path)
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
+    out = cv2.VideoWriter(output_path, fourcc, FPS, (FRAME_WIDTH, FRAME_HEIGHT))
+    total_motion_frames = sum(end - start + 1 for start, end in motion_segments)
+    processed_frames = 0
     
     for start, end in motion_segments:
         if cancel_event and cancel_event.is_set():
@@ -102,28 +110,38 @@ def create_intermediate_video(input_path, motion_segments, output_path, cancel_e
             if not ret:
                 break
             out.write(frame)
+            processed_frames += 1
+            if progress_callback and processed_frames % 100 == 0:
+                progress = 33 + (processed_frames / total_motion_frames) * 33
+                progress_callback(progress, processed_frames, total_motion_frames, 0)
     
     cap.release()
     out.release()
 
 def filter_and_adjust_speed(input_path, output_path, desired_duration, white_threshold=200, black_threshold=50, clip_limit=1.0, saturation_multiplier=1.1, progress_callback=None, cancel_event=None):
-    """Filter unwanted frames and adjust speed to fit desired duration."""
+    """Filter unwanted frames and adjust speed for 24 FPS videos."""
     clip = VideoFileClip(input_path)
     filtered_frames = []
+    total_frames = int(clip.duration * FPS)
+    frame_count = 0
     
-    for t in np.arange(0, clip.duration, 1 / clip.fps):
+    for t in np.arange(0, clip.duration, 1 / FPS):
         if cancel_event and cancel_event.is_set():
             clip.close()
             return "Processing canceled by user"
         frame = clip.get_frame(t)
         if not is_white_or_black_frame(frame, white_threshold, black_threshold):
             filtered_frames.append(t)
+        frame_count += 1
+        if progress_callback and frame_count % 100 == 0:
+            progress = 66 + (frame_count / total_frames) * 34
+            progress_callback(progress, frame_count, total_frames, 0)
     
     if not filtered_frames:
         clip.close()
         return "No frames left after filtering"
     
-    filtered_clip = concatenate_videoclips([clip.subclip(t, t + 1 / clip.fps) for t in filtered_frames])
+    filtered_clip = concatenate_videoclips([clip.subclip(t, t + 1 / FPS) for t in filtered_frames])
     current_duration = filtered_clip.duration
     speed_factor = current_duration / desired_duration if current_duration > desired_duration else 1.0
     final_clip = filtered_clip.speedx(factor=speed_factor)
@@ -134,44 +152,37 @@ def filter_and_adjust_speed(input_path, output_path, desired_duration, white_thr
         return normalized if normalized is not None else frame
     
     final_clip = final_clip.fl(normalize)
-    final_clip.write_videofile(output_path, codec='libx264', fps=clip.fps)
+    final_clip.write_videofile(output_path, codec='libx264', fps=FPS)
     clip.close()
     return None
 
 def process_video_multi_pass(input_path, output_path, desired_duration, motion_threshold, sample_interval, white_threshold, black_threshold, clip_limit, saturation_multiplier, progress_callback, cancel_event):
-    """Execute the multi-pass video processing workflow."""
+    """Execute multi-pass video processing with improved feedback for 24 FPS videos."""
     temp_path = f"temp_intermediate_{os.urandom(8).hex()}.mp4"
     
-    # Step 1: Detect motion segments
-    motion_segments = detect_motion_segments(input_path, motion_threshold, sample_interval, cancel_event)
+    motion_segments = detect_motion_segments(input_path, motion_threshold, sample_interval, cancel_event, progress_callback)
     if not motion_segments:
         return "No motion detected"
-    if progress_callback:
-        progress_callback(33, 1, 3, 0)  # Rough estimate for first third
     
-    # Step 2: Create intermediate video
-    create_intermediate_video(input_path, motion_segments, temp_path, cancel_event)
+    create_intermediate_video(input_path, motion_segments, temp_path, cancel_event, progress_callback)
     if cancel_event and cancel_event.is_set():
         if os.path.exists(temp_path):
             os.remove(temp_path)
         return "Processing canceled by user"
-    if progress_callback:
-        progress_callback(66, 2, 3, 0)  # Second third
     
-    # Step 3: Filter and adjust speed
     error = filter_and_adjust_speed(temp_path, output_path, desired_duration, white_threshold, black_threshold, clip_limit, saturation_multiplier, progress_callback, cancel_event)
     if os.path.exists(temp_path):
         os.remove(temp_path)
     if error:
         return error
     if progress_callback:
-        progress_callback(100, 3, 3, 0)  # Complete
+        progress_callback(100, 3, 3, 0)
     
     return None
 
 class VideoProcessorApp:
     def __init__(self, root):
-        """Initialize GUI and app state with sliders."""
+        """Initialize GUI and app state for 24 FPS, 1920x1080 videos."""
         self.root = root
         self.root.title(f"Bird Box Video Processor v{VERSION}")
         ctk.set_appearance_mode("dark")
@@ -311,7 +322,7 @@ class VideoProcessorApp:
             self.worker_thread.start()
     
     def process_video_thread(self):
-        """Process video in a background thread with progress updates."""
+        """Process video with dynamic time estimation for 24 FPS videos."""
         selected_videos = []
         if self.generate_60s.get():
             selected_videos.append(("Generate 60s Video", 60))
@@ -320,6 +331,11 @@ class VideoProcessorApp:
         
         base, ext = os.path.splitext(self.input_file)
         output_files = {}
+        
+        cap = cv2.VideoCapture(self.input_file)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+        estimated_total_time = (total_frames / 10) * 0.01  # Rough estimate: 0.01s per sampled frame
         
         for task_name, desired_duration in selected_videos:
             if self.cancel_event.is_set():
@@ -330,12 +346,14 @@ class VideoProcessorApp:
             
             def progress_callback(progress, current, total, remaining):
                 percentage = (current / total) * 100 if total > 0 else 0
+                if remaining == 0:
+                    remaining = estimated_total_time * (1 - current / total)
                 self.queue.put(("progress", progress, percentage, remaining))
             
             error = process_video_multi_pass(
                 self.input_file, output_file, desired_duration,
                 motion_threshold=self.motion_threshold,
-                sample_interval=5,
+                sample_interval=10,
                 white_threshold=self.white_threshold,
                 black_threshold=self.black_threshold,
                 clip_limit=self.clip_limit,
@@ -353,7 +371,7 @@ class VideoProcessorApp:
                 self.queue.put(("complete", output_files.get("Generate 60s Video"), output_files.get("Generate 12min Video"), elapsed))
     
     def cancel_processing(self):
-        """Stop processing by setting cancel event."""
+        """Stop processing."""
         self.cancel_event.set()
     
     def process_queue(self):
