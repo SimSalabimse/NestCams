@@ -1,6 +1,7 @@
-python video_processor_with_progress.py --input input.mp4 --short_length 60 --long_length 360 --fps 24 --motion_detection
+Manual install:
+    .\venv\Scripts\activate
+    pip install opencv-python numpy moviepy
 
-python video_clip_generator.py /path/to/your/video.mp4
-
-
-pip install opencv-python numpy moviepy
+Manual run:
+    .\venv\Scripts\activate
+    pythonw movie_*.pyw
