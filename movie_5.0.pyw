@@ -10,12 +10,16 @@ import threading
 import queue
 from moviepy.editor import VideoFileClip, concatenate_videoclips
 from concurrent.futures import ThreadPoolExecutor
+import logging
 
-VERSION = "2.1.5"  # Optimized for large files
+VERSION = "2.1.9"  # Enhanced reliability and cancel functionality
 FPS = 24
 FRAME_WIDTH = 1920
 FRAME_HEIGHT = 1080
 CHUNK_DURATION = 3600  # 1 hour in seconds
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class Tooltip:
     def __init__(self, widget, text):
@@ -40,48 +44,90 @@ class Tooltip:
             self.tooltip.destroy()
             self.tooltip = None
 
-def compute_motion_score_gpu(prev_frame, current_frame, threshold=30):
+def compute_motion_score_cpu(prev_frame, current_frame, threshold=30):
     if prev_frame is None or current_frame is None:
         return 0
-    prev_gpu = cuda.GpuMat()
-    curr_gpu = cuda.GpuMat()
-    prev_gpu.upload(prev_frame)
-    curr_gpu.upload(current_frame)
-    prev_resized = cuda.resize(prev_gpu, (int(FRAME_WIDTH * 0.5), int(FRAME_HEIGHT * 0.5)))
-    curr_resized = cuda.resize(curr_gpu, (int(FRAME_WIDTH * 0.5), int(FRAME_HEIGHT * 0.5)))
-    prev_gray = cuda.cvtColor(prev_resized, cv2.COLOR_BGR2GRAY)
-    curr_gray = cuda.cvtColor(curr_resized, cv2.COLOR_BGR2GRAY)
-    diff = cuda.absdiff(prev_gray, curr_gray)
-    _, thresh = cuda.threshold(diff, threshold, 255, cv2.THRESH_BINARY)
-    return cuda.sumElems(thresh)[0] / 255
+    prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+    curr_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
+    diff = cv2.absdiff(prev_gray, curr_gray)
+    _, thresh = cv2.threshold(diff, threshold, 255, cv2.THRESH_BINARY)
+    return np.sum(thresh) / 255
 
-def is_white_or_black_frame_gpu(frame, white_threshold=200, black_threshold=50):
-    frame_gpu = cuda.GpuMat()
-    frame_gpu.upload(frame)
-    gray_gpu = cuda.cvtColor(frame_gpu, cv2.COLOR_BGR2GRAY)
-    mean_brightness = cuda.mean(gray_gpu)[0]
+def is_white_or_black_frame_cpu(frame, white_threshold=200, black_threshold=50):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    mean_brightness = np.mean(gray)
     return mean_brightness > white_threshold or mean_brightness < black_threshold
 
-def normalize_frame_gpu(frame, clip_limit=1.0, saturation_multiplier=1.1):
-    frame_gpu = cuda.GpuMat()
-    frame_gpu.upload(frame)
-    lab_gpu = cuda.cvtColor(frame_gpu, cv2.COLOR_BGR2LAB)
-    l_gpu, a_gpu, b_gpu = cuda.split(lab_gpu)
+def normalize_frame_cpu(frame, clip_limit=1.0, saturation_multiplier=1.1):
+    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
     clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
-    l_clahe_gpu = cuda.GpuMat()
-    l_clahe_gpu.upload(clahe.apply(l_gpu.download()))
-    lab_clahe_gpu = cuda.merge((l_clahe_gpu, a_gpu, b_gpu))
-    frame_clahe_gpu = cuda.cvtColor(lab_clahe_gpu, cv2.COLOR_LAB2BGR)
-    hsv_gpu = cuda.cvtColor(frame_clahe_gpu, cv2.COLOR_BGR2HSV)
-    h_gpu, s_gpu, v_gpu = cuda.split(hsv_gpu)
-    s_enhanced_gpu = cuda.multiply(s_gpu, saturation_multiplier)
-    s_enhanced_gpu = cuda.min(s_enhanced_gpu, 255)
-    hsv_enhanced_gpu = cuda.merge((h_gpu, s_enhanced_gpu, v_gpu))
-    return cuda.cvtColor(hsv_enhanced_gpu, cv2.COLOR_HSV2BGR).download()
+    l_clahe = clahe.apply(l)
+    lab_clahe = cv2.merge((l_clahe, a, b))
+    frame_clahe = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
+    hsv = cv2.cvtColor(frame_clahe, cv2.COLOR_BGR2HSV)
+    h, s, v = cv2.split(hsv)
+    s_enhanced = cv2.multiply(s, saturation_multiplier)
+    s_enhanced = cv2.min(s_enhanced, 255)
+    hsv_enhanced = cv2.merge((h, s_enhanced, v))
+    return cv2.cvtColor(hsv_enhanced, cv2.COLOR_HSV2BGR)
+
+def compute_motion_score_gpu(prev_frame, current_frame, threshold=30):
+    try:
+        if prev_frame is None or current_frame is None:
+            return 0
+        prev_gpu = cuda.GpuMat()
+        curr_gpu = cuda.GpuMat()
+        prev_gpu.upload(prev_frame)
+        curr_gpu.upload(current_frame)
+        prev_resized = cuda.resize(prev_gpu, (int(FRAME_WIDTH * 0.5), int(FRAME_HEIGHT * 0.5)))
+        curr_resized = cuda.resize(curr_gpu, (int(FRAME_WIDTH * 0.5), int(FRAME_HEIGHT * 0.5)))
+        prev_gray = cuda.cvtColor(prev_resized, cv2.COLOR_BGR2GRAY)
+        curr_gray = cuda.cvtColor(curr_resized, cv2.COLOR_BGR2GRAY)
+        diff = cuda.absdiff(prev_gray, curr_gray)
+        _, thresh = cuda.threshold(diff, threshold, 255, cv2.THRESH_BINARY)
+        return cuda.sumElems(thresh)[0] / 255
+    except Exception as e:
+        logging.error(f"GPU error in compute_motion_score: {e}, falling back to CPU")
+        return compute_motion_score_cpu(prev_frame, current_frame, threshold)
+
+def is_white_or_black_frame_gpu(frame, white_threshold=200, black_threshold=50):
+    try:
+        frame_gpu = cuda.GpuMat()
+        frame_gpu.upload(frame)
+        gray_gpu = cuda.cvtColor(frame_gpu, cv2.COLOR_BGR2GRAY)
+        mean_brightness = cuda.mean(gray_gpu)[0]
+        return mean_brightness > white_threshold or mean_brightness < black_threshold
+    except Exception as e:
+        logging.error(f"GPU error in is_white_or_black_frame: {e}, falling back to CPU")
+        return is_white_or_black_frame_cpu(frame, white_threshold, black_threshold)
+
+def normalize_frame_gpu(frame, clip_limit=1.0, saturation_multiplier=1.1):
+    try:
+        frame_gpu = cuda.GpuMat()
+        frame_gpu.upload(frame)
+        lab_gpu = cuda.cvtColor(frame_gpu, cv2.COLOR_BGR2LAB)
+        l_gpu, a_gpu, b_gpu = cuda.split(lab_gpu)
+        clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
+        l_clahe_gpu = cuda.GpuMat()
+        l_clahe_gpu.upload(clahe.apply(l_gpu.download()))
+        lab_clahe_gpu = cuda.merge((l_clahe_gpu, a_gpu, b_gpu))
+        frame_clahe_gpu = cuda.cvtColor(lab_clahe_gpu, cv2.COLOR_LAB2BGR)
+        hsv_gpu = cuda.cvtColor(frame_clahe_gpu, cv2.COLOR_BGR2HSV)
+        h_gpu, s_gpu, v_gpu = cuda.split(hsv_gpu)
+        s_enhanced_gpu = cuda.multiply(s_gpu, saturation_multiplier)
+        s_enhanced_gpu = cuda.min(s_enhanced_gpu, 255)
+        hsv_enhanced_gpu = cuda.merge((h_gpu, s_enhanced_gpu, v_gpu))
+        return cuda.cvtColor(hsv_enhanced_gpu, cv2.COLOR_HSV2BGR).download()
+    except Exception as e:
+        logging.error(f"GPU error in normalize_frame: {e}, falling back to CPU")
+        return normalize_frame_cpu(frame, clip_limit, saturation_multiplier)
 
 def detect_motion_segments(input_path, motion_threshold=3000, sample_interval=20, cancel_event=None, progress_callback=None):
+    logging.info("Starting motion detection")
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
+        logging.error("Failed to open video file")
         return []
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     motion_segments = []
@@ -90,8 +136,11 @@ def detect_motion_segments(input_path, motion_threshold=3000, sample_interval=20
     prev_frame = None
     start_time = time.time()
     frame_times = []
+    alpha = 0.2  # Exponential smoothing factor
+    avg_time_per_frame = 0
     for frame_idx in range(0, total_frames, sample_interval):
         if cancel_event and cancel_event.is_set():
+            logging.info("Motion detection canceled")
             cap.release()
             return []
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
@@ -107,17 +156,16 @@ def detect_motion_segments(input_path, motion_threshold=3000, sample_interval=20
                 in_motion = False
                 motion_segments.append((segment_start, frame_idx))
         prev_frame = frame
-        if frame_idx % 50 == 0:
+        if frame_idx % 20 == 0:
             elapsed = time.time() - start_time
             frame_times.append(elapsed)
-            if len(frame_times) > 10:
-                frame_times.pop(0)
-            avg_time_per_frame = sum(frame_times) / len(frame_times)
-            remaining_frames = (total_frames - frame_idx) // sample_interval
-            remaining_time = remaining_frames * avg_time_per_frame
-            progress = (frame_idx / total_frames) * 33
-            if progress_callback:
-                progress_callback(progress, frame_idx, total_frames, remaining_time)
+            if len(frame_times) > 1:
+                avg_time_per_frame = alpha * elapsed + (1 - alpha) * avg_time_per_frame if avg_time_per_frame else elapsed
+                remaining_frames = (total_frames - frame_idx) // sample_interval
+                remaining_time = min(remaining_frames * avg_time_per_frame, 60000)  # Cap at 1000 minutes
+                progress = (frame_idx / total_frames) * 33
+                if progress_callback:
+                    progress_callback("Detecting Motion", progress, remaining_time)
     if in_motion:
         motion_segments.append((segment_start, total_frames - 1))
     cap.release()
@@ -130,9 +178,11 @@ def create_intermediate_video(input_path, motion_segments, output_path, cancel_e
     total_motion_frames = sum(end - start + 1 for start, end in motion_segments)
     processed_frames = 0
     start_time = time.time()
-    frame_times = []
+    alpha = 0.2
+    avg_time_per_frame = 0
     for start, end in motion_segments:
         if cancel_event and cancel_event.is_set():
+            logging.info("Intermediate video creation canceled")
             cap.release()
             out.release()
             return
@@ -143,61 +193,60 @@ def create_intermediate_video(input_path, motion_segments, output_path, cancel_e
                 break
             out.write(frame)
             processed_frames += 1
-            if processed_frames % 50 == 0:
+            if processed_frames % 20 == 0:
                 elapsed = time.time() - start_time
-                frame_times.append(elapsed)
-                if len(frame_times) > 10:
-                    frame_times.pop(0)
-                avg_time_per_frame = sum(frame_times) / len(frame_times)
+                avg_time_per_frame = alpha * elapsed + (1 - alpha) * avg_time_per_frame if avg_time_per_frame else elapsed
                 remaining_frames = total_motion_frames - processed_frames
-                remaining_time = remaining_frames * avg_time_per_frame
+                remaining_time = min(remaining_frames * avg_time_per_frame, 60000)
                 progress = 33 + (processed_frames / total_motion_frames) * 33
                 if progress_callback:
-                    progress_callback(progress, processed_frames, total_motion_frames, remaining_time)
+                    progress_callback("Creating Intermediate Video", progress, remaining_time)
     cap.release()
     out.release()
 
 def filter_and_adjust_speed(input_path, output_path, desired_duration, white_threshold=200, black_threshold=50, clip_limit=1.0, saturation_multiplier=1.1, progress_callback=None, cancel_event=None):
-    clip = VideoFileClip(input_path)
-    filtered_frames = []
-    total_frames = int(clip.duration * FPS)
-    frame_count = 0
-    start_time = time.time()
-    frame_times = []
-    for t in np.arange(0, clip.duration, 1 / FPS):
-        if cancel_event and cancel_event.is_set():
+    try:
+        clip = VideoFileClip(input_path)
+        filtered_frames = []
+        total_frames = int(clip.duration * FPS)
+        frame_count = 0
+        start_time = time.time()
+        alpha = 0.2
+        avg_time_per_frame = 0
+        for t in np.arange(0, clip.duration, 1 / FPS):
+            if cancel_event and cancel_event.is_set():
+                logging.info("Filtering and speed adjustment canceled")
+                clip.close()
+                return "Processing canceled by user"
+            frame = clip.get_frame(t)
+            if not is_white_or_black_frame_gpu(frame, white_threshold, black_threshold):
+                filtered_frames.append(t)
+            frame_count += 1
+            if frame_count % 20 == 0:
+                elapsed = time.time() - start_time
+                avg_time_per_frame = alpha * elapsed + (1 - alpha) * avg_time_per_frame if avg_time_per_frame else elapsed
+                remaining_frames = total_frames - frame_count
+                remaining_time = min(remaining_frames * avg_time_per_frame, 60000)
+                progress = 66 + (frame_count / total_frames) * 34
+                if progress_callback:
+                    progress_callback("Filtering and Adjusting Speed", progress, remaining_time)
+        if not filtered_frames:
             clip.close()
-            return "Processing canceled by user"
-        frame = clip.get_frame(t)
-        if not is_white_or_black_frame_gpu(frame, white_threshold, black_threshold):
-            filtered_frames.append(t)
-        frame_count += 1
-        if frame_count % 50 == 0:
-            elapsed = time.time() - start_time
-            frame_times.append(elapsed)
-            if len(frame_times) > 10:
-                frame_times.pop(0)
-            avg_time_per_frame = sum(frame_times) / len(frame_times)
-            remaining_frames = total_frames - frame_count
-            remaining_time = remaining_frames * avg_time_per_frame
-            progress = 66 + (frame_count / total_frames) * 34
-            if progress_callback:
-                progress_callback(progress, frame_count, total_frames, remaining_time)
-    if not filtered_frames:
+            return "No frames left after filtering"
+        filtered_clip = concatenate_videoclips([clip.subclip(t, t + 1 / FPS) for t in filtered_frames])
+        current_duration = filtered_clip.duration
+        speed_factor = current_duration / desired_duration if current_duration > desired_duration else 1.0
+        final_clip = filtered_clip.speedx(factor=speed_factor)
+        def normalize(t):
+            frame = final_clip.get_frame(t)
+            return normalize_frame_gpu(frame, clip_limit, saturation_multiplier) or frame
+        final_clip = final_clip.fl(normalize)
+        final_clip.write_videofile(output_path, codec='libx264', fps=FPS, verbose=False, logger=None)
         clip.close()
-        return "No frames left after filtering"
-    filtered_clip = concatenate_videoclips([clip.subclip(t, t + 1 / FPS) for t in filtered_frames])
-    current_duration = filtered_clip.duration
-    speed_factor = current_duration / desired_duration if current_duration > desired_duration else 1.0
-    final_clip = filtered_clip.speedx(factor=speed_factor)
-    def normalize(t):
-        frame = final_clip.get_frame(t)
-        normalized = normalize_frame_gpu(frame, clip_limit, saturation_multiplier)
-        return normalized if normalized is not None else frame
-    final_clip = final_clip.fl(normalize)
-    final_clip.write_videofile(output_path, codec='libx264', fps=FPS)
-    clip.close()
-    return None
+        return None
+    except Exception as e:
+        logging.error(f"Error during filtering: {e}")
+        return f"Error during filtering: {str(e)}"
 
 def process_video_multi_pass(input_path, output_path, desired_duration, motion_threshold, sample_interval, white_threshold, black_threshold, clip_limit, saturation_multiplier, progress_callback, cancel_event):
     temp_path = f"temp_intermediate_{os.urandom(8).hex()}.mp4"
@@ -215,7 +264,7 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
     if error:
         return error
     if progress_callback:
-        progress_callback(100, 3, 3, 0)
+        progress_callback("Completed", 100, 0)
     return None
 
 class VideoProcessorApp:
@@ -280,8 +329,12 @@ class VideoProcessorApp:
         self.saturation_value_label.pack(pady=2)
         self.browse_button = ctk.CTkButton(root, text="Browse", command=self.browse_file)
         self.browse_button.pack(pady=5)
-        self.progress = ctk.CTkProgressBar(root, orientation="horizontal", mode="determinate", width=300)
-        self.progress.pack(pady=10)
+        self.progress_frame = ctk.CTkFrame(root)
+        self.progress_frame.pack(pady=10)
+        self.progress = ctk.CTkProgressBar(self.progress_frame, orientation="horizontal", mode="determinate", width=300)
+        self.progress.pack(side=tk.LEFT, padx=5)
+        self.percentage_label = ctk.CTkLabel(self.progress_frame, text="0.00%")
+        self.percentage_label.pack(side=tk.LEFT, padx=5)
         self.progress.set(0)
         self.current_task_label = ctk.CTkLabel(root, text="Current Task: N/A")
         self.current_task_label.pack(pady=5)
@@ -300,11 +353,6 @@ class VideoProcessorApp:
         self.queue = queue.Queue()
         self.start_time = None
         self.root.after(100, self.process_queue)
-        self.motion_threshold = 3000
-        self.white_threshold = 200
-        self.black_threshold = 50
-        self.clip_limit = 1.0
-        self.saturation_multiplier = 1.1
 
     def update_motion_threshold(self, value):
         self.motion_threshold = int(value)
@@ -327,8 +375,10 @@ class VideoProcessorApp:
         self.saturation_value_label.configure(text=f"Saturation: {self.saturation_multiplier:.1f}")
 
     def browse_file(self):
+        logging.info("Browse file button clicked")
         self.input_file = filedialog.askopenfilename(filetypes=[("Video files", "*.mp4 *.avi *.mkv")])
         if self.input_file:
+            logging.info(f"Selected file: {self.input_file}")
             self.label.configure(text=f"Selected: {os.path.basename(self.input_file)}")
             if not self.generate_60s.get() and not self.generate_12min.get():
                 messagebox.showwarning("Warning", "Please enable at least one video to generate.")
@@ -343,8 +393,11 @@ class VideoProcessorApp:
             self.start_time = time.time()
             self.worker_thread = threading.Thread(target=self.process_video_thread)
             self.worker_thread.start()
+            logging.info("Worker thread started")
 
     def process_video_thread(self):
+        logging.info("Processing thread started")
+        self.queue.put(("task_start", "Loading video...", 0))
         selected_videos = []
         if self.generate_60s.get():
             selected_videos.append(("Generate 60s Video", 60))
@@ -353,26 +406,28 @@ class VideoProcessorApp:
         base, ext = os.path.splitext(self.input_file)
         output_files = {}
         cap = cv2.VideoCapture(self.input_file)
+        if not cap.isOpened():
+            logging.error("Failed to open video file")
+            self.queue.put(("canceled", "Failed to open video file"))
+            return
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
-        estimated_total_time = (total_frames / 20) * 0.01  # Adjusted for larger sample_interval
         for task_name, desired_duration in selected_videos:
             if self.cancel_event.is_set():
+                logging.info("Processing canceled by user")
                 self.queue.put(("canceled", "User Cancellation"))
                 break
             output_file = f"{base}_{task_name.split()[1]}{ext}"
             self.queue.put(("task_start", task_name, 0))
-            def progress_callback(progress, current, total, remaining):
-                percentage = (current / total) * 100 if total > 0 else 0
-                if remaining == 0:
-                    remaining = estimated_total_time * (1 - current / total)
-                self.queue.put(("progress", progress, percentage, remaining))
+            def progress_callback(phase, progress, remaining):
+                self.queue.put(("progress", phase, progress, remaining))
             error = process_video_multi_pass(
                 self.input_file, output_file, desired_duration,
                 self.motion_threshold, 20, self.white_threshold, self.black_threshold,
                 self.clip_limit, self.saturation_multiplier, progress_callback, self.cancel_event
             )
             if error:
+                logging.error(f"Processing error: {error}")
                 self.queue.put(("canceled", error))
                 break
             else:
@@ -381,6 +436,7 @@ class VideoProcessorApp:
                 self.queue.put(("complete", output_files.get("Generate 60s Video"), output_files.get("Generate 12min Video"), elapsed))
 
     def cancel_processing(self):
+        logging.info("Cancel button pressed")
         self.cancel_event.set()
 
     def process_queue(self):
@@ -397,14 +453,17 @@ class VideoProcessorApp:
             task_name, progress = message[1:]
             self.current_task_label.configure(text=f"Current Task: {task_name}")
             self.progress.set(progress / 100)
+            self.percentage_label.configure(text=f"{progress:.2f}%")
             self.time_label.configure(text="Estimating time...")
         elif message[0] == "progress":
-            progress_value, percentage, remaining = message[1:]
+            phase, progress_value, remaining = message[1:]
+            self.current_task_label.configure(text=f"Current Task: {phase}")
             self.progress.set(progress_value / 100)
+            self.percentage_label.configure(text=f"{progress_value:.2f}%")
             remaining_min = int(remaining // 60)
             remaining_sec = int(remaining % 60)
             time_str = f"{remaining_min} min {remaining_sec} sec"
-            self.time_label.configure(text=f"Est. Time Remaining: {time_str} ({percentage:.2f}%)")
+            self.time_label.configure(text=f"Est. Time Remaining: {time_str}")
         elif message[0] == "complete":
             output_60s, output_12min, elapsed = message[1:]
             minutes = int(elapsed // 60)
@@ -413,6 +472,7 @@ class VideoProcessorApp:
             self.output_60s.configure(text=f"60s Video: {output_60s if output_60s else 'Not generated'}")
             self.output_12min.configure(text=f"12min Video: {output_12min if output_12min else 'Not generated'}")
             self.current_task_label.configure(text="Current Task: N/A")
+            self.percentage_label.configure(text="100.00%")
             self.time_label.configure(text=f"Process Complete in {time_str}")
             self.reset_ui()
         elif message[0] == "canceled":
@@ -424,6 +484,7 @@ class VideoProcessorApp:
             self.output_60s.configure(text=f"60s Video: Canceled - {reason}")
             self.output_12min.configure(text=f"12min Video: Canceled - {reason}")
             self.current_task_label.configure(text="Current Task: N/A")
+            self.percentage_label.configure(text="0.00%")
             self.time_label.configure(text=f"Process Canceled in {time_str}")
             self.reset_ui()
 
