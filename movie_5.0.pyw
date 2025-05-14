@@ -2,383 +2,409 @@ import tkinter as tk
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import cv2
-import cv2.cuda as cuda
 import numpy as np
 import os
 import time
 import threading
 import queue
-from moviepy.editor import VideoFileClip, concatenate_videoclips
-from concurrent.futures import ThreadPoolExecutor
-import logging
+import uuid
+import json
 
-VERSION = "2.1.9"  # Enhanced reliability and cancel functionality
-FPS = 24
-FRAME_WIDTH = 1920
-FRAME_HEIGHT = 1080
-CHUNK_DURATION = 3600  # 1 hour in seconds
+# Version number
+VERSION = "2.1.10"  # Updated for grown bird detection
 
-# Setup logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+### Helper Functions
 
-class Tooltip:
-    def __init__(self, widget, text):
-        self.widget = widget
-        self.text = text
-        self.tooltip = None
-        self.widget.bind("<Enter>", self.show_tooltip)
-        self.widget.bind("<Leave>", self.hide_tooltip)
-
-    def show_tooltip(self, event=None):
-        x, y, _, _ = self.widget.bbox("insert")
-        x += self.widget.winfo_rootx() + 25
-        y += self.widget.winfo_rooty() + 25
-        self.tooltip = tk.Toplevel(self.widget)
-        self.tooltip.wm_overrideredirect(True)
-        self.tooltip.wm_geometry(f"+{x}+{y}")
-        label = tk.Label(self.tooltip, text=self.text, background="yellow", relief="solid", borderwidth=1)
-        label.pack()
-
-    def hide_tooltip(self, event=None):
-        if self.tooltip:
-            self.tooltip.destroy()
-            self.tooltip = None
-
-def compute_motion_score_cpu(prev_frame, current_frame, threshold=30):
+def compute_motion_score(prev_frame, current_frame, threshold=30):
+    """Compute motion score between two frames."""
     if prev_frame is None or current_frame is None:
         return 0
     prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
     curr_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
     diff = cv2.absdiff(prev_gray, curr_gray)
-    _, thresh = cv2.threshold(diff, threshold, 255, cv2.THRESH_BINARY)
-    return np.sum(thresh) / 255
+    return np.sum(diff > threshold, dtype=np.uint32)
 
-def is_white_or_black_frame_cpu(frame, white_threshold=200, black_threshold=50):
+def is_white_or_black_frame(frame, white_threshold=200, black_threshold=50):
+    """Check if frame is predominantly white or black."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     mean_brightness = np.mean(gray)
     return mean_brightness > white_threshold or mean_brightness < black_threshold
 
-def normalize_frame_cpu(frame, clip_limit=1.0, saturation_multiplier=1.1):
-    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
-    l_clahe = clahe.apply(l)
-    lab_clahe = cv2.merge((l_clahe, a, b))
-    frame_clahe = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
-    hsv = cv2.cvtColor(frame_clahe, cv2.COLOR_BGR2HSV)
-    h, s, v = cv2.split(hsv)
-    s_enhanced = cv2.multiply(s, saturation_multiplier)
-    s_enhanced = cv2.min(s_enhanced, 255)
-    hsv_enhanced = cv2.merge((h, s_enhanced, v))
-    return cv2.cvtColor(hsv_enhanced, cv2.COLOR_HSV2BGR)
-
-def compute_motion_score_gpu(prev_frame, current_frame, threshold=30):
+def normalize_frame(frame, clip_limit=1.0, saturation_multiplier=1.1):
+    """Normalize frame brightness and enhance saturation."""
     try:
-        if prev_frame is None or current_frame is None:
-            return 0
-        prev_gpu = cuda.GpuMat()
-        curr_gpu = cuda.GpuMat()
-        prev_gpu.upload(prev_frame)
-        curr_gpu.upload(current_frame)
-        prev_resized = cuda.resize(prev_gpu, (int(FRAME_WIDTH * 0.5), int(FRAME_HEIGHT * 0.5)))
-        curr_resized = cuda.resize(curr_gpu, (int(FRAME_WIDTH * 0.5), int(FRAME_HEIGHT * 0.5)))
-        prev_gray = cuda.cvtColor(prev_resized, cv2.COLOR_BGR2GRAY)
-        curr_gray = cuda.cvtColor(curr_resized, cv2.COLOR_BGR2GRAY)
-        diff = cuda.absdiff(prev_gray, curr_gray)
-        _, thresh = cuda.threshold(diff, threshold, 255, cv2.THRESH_BINARY)
-        return cuda.sumElems(thresh)[0] / 255
-    except Exception as e:
-        logging.error(f"GPU error in compute_motion_score: {e}, falling back to CPU")
-        return compute_motion_score_cpu(prev_frame, current_frame, threshold)
-
-def is_white_or_black_frame_gpu(frame, white_threshold=200, black_threshold=50):
-    try:
-        frame_gpu = cuda.GpuMat()
-        frame_gpu.upload(frame)
-        gray_gpu = cuda.cvtColor(frame_gpu, cv2.COLOR_BGR2GRAY)
-        mean_brightness = cuda.mean(gray_gpu)[0]
-        return mean_brightness > white_threshold or mean_brightness < black_threshold
-    except Exception as e:
-        logging.error(f"GPU error in is_white_or_black_frame: {e}, falling back to CPU")
-        return is_white_or_black_frame_cpu(frame, white_threshold, black_threshold)
-
-def normalize_frame_gpu(frame, clip_limit=1.0, saturation_multiplier=1.1):
-    try:
-        frame_gpu = cuda.GpuMat()
-        frame_gpu.upload(frame)
-        lab_gpu = cuda.cvtColor(frame_gpu, cv2.COLOR_BGR2LAB)
-        l_gpu, a_gpu, b_gpu = cuda.split(lab_gpu)
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
         clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
-        l_clahe_gpu = cuda.GpuMat()
-        l_clahe_gpu.upload(clahe.apply(l_gpu.download()))
-        lab_clahe_gpu = cuda.merge((l_clahe_gpu, a_gpu, b_gpu))
-        frame_clahe_gpu = cuda.cvtColor(lab_clahe_gpu, cv2.COLOR_LAB2BGR)
-        hsv_gpu = cuda.cvtColor(frame_clahe_gpu, cv2.COLOR_BGR2HSV)
-        h_gpu, s_gpu, v_gpu = cuda.split(hsv_gpu)
-        s_enhanced_gpu = cuda.multiply(s_gpu, saturation_multiplier)
-        s_enhanced_gpu = cuda.min(s_enhanced_gpu, 255)
-        hsv_enhanced_gpu = cuda.merge((h_gpu, s_enhanced_gpu, v_gpu))
-        return cuda.cvtColor(hsv_enhanced_gpu, cv2.COLOR_HSV2BGR).download()
-    except Exception as e:
-        logging.error(f"GPU error in normalize_frame: {e}, falling back to CPU")
-        return normalize_frame_cpu(frame, clip_limit, saturation_multiplier)
+        l_clahe = clahe.apply(l)
+        lab_clahe = cv2.merge((l_clahe, a, b))
+        frame_clahe = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
+        
+        hsv = cv2.cvtColor(frame_clahe, cv2.COLOR_BGR2HSV)
+        h, s, v = cv2.split(hsv)
+        s = (s.astype('float32') * saturation_multiplier).clip(0, 255).astype('uint8')
+        hsv_enhanced = cv2.merge((h, s, v))
+        return cv2.cvtColor(hsv_enhanced, cv2.COLOR_HSV2BGR)
+    except MemoryError:
+        return None
 
-def detect_motion_segments(input_path, motion_threshold=3000, sample_interval=20, cancel_event=None, progress_callback=None):
-    logging.info("Starting motion detection")
+def detect_grown_bird(frame, prev_frame, motion_threshold=4000, min_object_area=1000):
+    """Detect if a grown bird is present based on motion and object size."""
+    if prev_frame is None:
+        return False
+    gray_prev = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+    gray_curr = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    diff = cv2.absdiff(gray_prev, gray_curr)
+    _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in contours:
+        if cv2.contourArea(contour) > min_object_area:
+            return True
+    return False
+
+def process_video_multi_pass(input_path, output_path, desired_duration, motion_threshold=4000, sample_interval=5, white_threshold=200, black_threshold=50, clip_limit=1.0, saturation_multiplier=1.1, progress_callback=None, cancel_event=None, min_object_area=1000):
+    """Process video to select frames with grown birds."""
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
-        logging.error("Failed to open video file")
-        return []
+        print("Error: Could not open video file")
+        return "Failed to open video file"
+    
+    fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    motion_segments = []
-    in_motion = False
-    segment_start = 0
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    if total_frames <= 0 or fps <= 0:
+        cap.release()
+        return "Invalid video properties"
+    
+    # Step 1: Collect frames with grown birds
+    temp_path1 = f"temp_intermediate_{uuid.uuid4().hex}.mp4"
+    include_indices = []
     prev_frame = None
     start_time = time.time()
-    frame_times = []
-    alpha = 0.2  # Exponential smoothing factor
-    avg_time_per_frame = 0
+    
+    print(f"Pass 1: Collecting frames with grown birds from {total_frames} total frames")
     for frame_idx in range(0, total_frames, sample_interval):
         if cancel_event and cancel_event.is_set():
-            logging.info("Motion detection canceled")
             cap.release()
-            return []
+            return "Processing canceled by user"
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = cap.read()
         if not ret:
             break
-        if prev_frame is not None:
-            motion_score = compute_motion_score_gpu(prev_frame, frame)
-            if motion_score > motion_threshold and not in_motion:
-                in_motion = True
-                segment_start = frame_idx
-            elif motion_score <= motion_threshold and in_motion:
-                in_motion = False
-                motion_segments.append((segment_start, frame_idx))
-        prev_frame = frame
-        if frame_idx % 20 == 0:
+        if detect_grown_bird(frame, prev_frame, motion_threshold, min_object_area):
+            include_indices.append(frame_idx)
+        prev_frame = frame.copy()
+        
+        # Progress for Pass 1 (0-33%)
+        if progress_callback and frame_idx % 100 == 0:
             elapsed = time.time() - start_time
-            frame_times.append(elapsed)
-            if len(frame_times) > 1:
-                avg_time_per_frame = alpha * elapsed + (1 - alpha) * avg_time_per_frame if avg_time_per_frame else elapsed
-                remaining_frames = (total_frames - frame_idx) // sample_interval
-                remaining_time = min(remaining_frames * avg_time_per_frame, 60000)  # Cap at 1000 minutes
-                progress = (frame_idx / total_frames) * 33
-                if progress_callback:
-                    progress_callback("Detecting Motion", progress, remaining_time)
-    if in_motion:
-        motion_segments.append((segment_start, total_frames - 1))
+            rate = frame_idx / elapsed if elapsed > 0 else 0
+            remaining = (total_frames - frame_idx) / rate if rate > 0 else 0
+            progress_callback(frame_idx / total_frames * 33, frame_idx, total_frames, remaining)
+    
     cap.release()
-    return motion_segments
-
-def create_intermediate_video(input_path, motion_segments, output_path, cancel_event=None, progress_callback=None):
+    print(f"Pass 1 complete: Collected {len(include_indices)} frames with grown birds")
+    
+    if not include_indices:
+        # Fallback: Include evenly spaced frames if no grown birds detected
+        target_frames = int(desired_duration * fps)
+        include_indices = [i for i in range(0, total_frames, max(1, total_frames // target_frames))]
+        print("Warning: No grown birds detected, using fallback frames")
+    
+    # Write intermediate video
     cap = cv2.VideoCapture(input_path)
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_path, fourcc, FPS, (FRAME_WIDTH, FRAME_HEIGHT))
-    total_motion_frames = sum(end - start + 1 for start, end in motion_segments)
-    processed_frames = 0
-    start_time = time.time()
-    alpha = 0.2
-    avg_time_per_frame = 0
-    for start, end in motion_segments:
+    out = cv2.VideoWriter(temp_path1, fourcc, fps, (frame_width, frame_height))
+    for idx, frame_idx in enumerate(include_indices):
         if cancel_event and cancel_event.is_set():
-            logging.info("Intermediate video creation canceled")
             cap.release()
             out.release()
-            return
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start)
-        for _ in range(start, end + 1):
-            ret, frame = cap.read()
-            if not ret:
-                break
+            os.remove(temp_path1)
+            return "Processing canceled by user"
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret, frame = cap.read()
+        if ret:
             out.write(frame)
-            processed_frames += 1
-            if processed_frames % 20 == 0:
-                elapsed = time.time() - start_time
-                avg_time_per_frame = alpha * elapsed + (1 - alpha) * avg_time_per_frame if avg_time_per_frame else elapsed
-                remaining_frames = total_motion_frames - processed_frames
-                remaining_time = min(remaining_frames * avg_time_per_frame, 60000)
-                progress = 33 + (processed_frames / total_motion_frames) * 33
-                if progress_callback:
-                    progress_callback("Creating Intermediate Video", progress, remaining_time)
+        if progress_callback and idx % 50 == 0:
+            progress_callback(33 + (idx / len(include_indices) * 33), idx, len(include_indices), 0)
     cap.release()
     out.release()
+    print(f"Intermediate video written with {len(include_indices)} frames")
+    
+    # Step 2: Filter white/black frames
+    temp_path2 = f"temp_filtered_{uuid.uuid4().hex}.mp4"
+    cap = cv2.VideoCapture(temp_path1)
+    out = cv2.VideoWriter(temp_path2, fourcc, fps, (frame_width, frame_height))
+    filtered_indices = []
+    
+    total_intermediate_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    for frame_idx in range(total_intermediate_frames):
+        if cancel_event and cancel_event.is_set():
+            cap.release()
+            out.release()
+            os.remove(temp_path1)
+            return "Processing canceled by user"
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if not is_white_or_black_frame(frame, white_threshold, black_threshold):
+            out.write(frame)
+            filtered_indices.append(frame_idx)
+        
+        # Progress for Pass 2 (33-66%)
+        if progress_callback and frame_idx % 50 == 0:
+            elapsed = time.time() - start_time
+            rate = frame_idx / elapsed if elapsed > 0 else 0
+            remaining = (total_intermediate_frames - frame_idx) / rate if rate > 0 else 0
+            progress_callback(33 + (frame_idx / total_intermediate_frames * 33), frame_idx, total_intermediate_frames, remaining)
+    
+    cap.release()
+    out.release()
+    os.remove(temp_path1)
+    print(f"Pass 2 complete: After filtering, {len(filtered_indices)} frames remain")
+    
+    # Step 3: Trim to final length
+    target_frames = int(desired_duration * fps)
+    cap = cv2.VideoCapture(temp_path2)
+    out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
+    
+    if len(filtered_indices) > target_frames:
+        step = len(filtered_indices) / target_frames
+        final_indices = [filtered_indices[int(i * step)] for i in range(target_frames)]
+    else:
+        final_indices = filtered_indices
+        if len(final_indices) < target_frames:
+            print(f"Warning: Only {len(final_indices)} frames available, less than desired {target_frames}")
+    
+    for idx, frame_idx in enumerate(final_indices):
+        if cancel_event and cancel_event.is_set():
+            cap.release()
+            out.release()
+            os.remove(temp_path2)
+            return "Processing canceled by user"
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+        ret, frame = cap.read()
+        if ret:
+            normalized_frame = normalize_frame(frame, clip_limit, saturation_multiplier)
+            if normalized_frame is None:
+                print("Memory error during frame normalization")
+                cap.release()
+                out.release()
+                os.remove(temp_path2)
+                return "Memory error during processing"
+            out.write(normalized_frame)
+        
+        # Progress for Pass 3 (66-100%)
+        if progress_callback and idx % 10 == 0:
+            elapsed = time.time() - start_time
+            rate = idx / elapsed if elapsed > 0 else 0
+            remaining = (len(final_indices) - idx) / rate if rate > 0 else 0
+            progress_callback(66 + (idx / len(final_indices) * 34), idx, len(final_indices), remaining)
+    
+    cap.release()
+    out.release()
+    os.remove(temp_path2)
+    print(f"Final video written with {len(final_indices)} frames for {desired_duration} seconds")
+    return None if final_indices else "No frames written after trimming"
 
-def filter_and_adjust_speed(input_path, output_path, desired_duration, white_threshold=200, black_threshold=50, clip_limit=1.0, saturation_multiplier=1.1, progress_callback=None, cancel_event=None):
-    try:
-        clip = VideoFileClip(input_path)
-        filtered_frames = []
-        total_frames = int(clip.duration * FPS)
-        frame_count = 0
-        start_time = time.time()
-        alpha = 0.2
-        avg_time_per_frame = 0
-        for t in np.arange(0, clip.duration, 1 / FPS):
-            if cancel_event and cancel_event.is_set():
-                logging.info("Filtering and speed adjustment canceled")
-                clip.close()
-                return "Processing canceled by user"
-            frame = clip.get_frame(t)
-            if not is_white_or_black_frame_gpu(frame, white_threshold, black_threshold):
-                filtered_frames.append(t)
-            frame_count += 1
-            if frame_count % 20 == 0:
-                elapsed = time.time() - start_time
-                avg_time_per_frame = alpha * elapsed + (1 - alpha) * avg_time_per_frame if avg_time_per_frame else elapsed
-                remaining_frames = total_frames - frame_count
-                remaining_time = min(remaining_frames * avg_time_per_frame, 60000)
-                progress = 66 + (frame_count / total_frames) * 34
-                if progress_callback:
-                    progress_callback("Filtering and Adjusting Speed", progress, remaining_time)
-        if not filtered_frames:
-            clip.close()
-            return "No frames left after filtering"
-        filtered_clip = concatenate_videoclips([clip.subclip(t, t + 1 / FPS) for t in filtered_frames])
-        current_duration = filtered_clip.duration
-        speed_factor = current_duration / desired_duration if current_duration > desired_duration else 1.0
-        final_clip = filtered_clip.speedx(factor=speed_factor)
-        def normalize(t):
-            frame = final_clip.get_frame(t)
-            return normalize_frame_gpu(frame, clip_limit, saturation_multiplier) or frame
-        final_clip = final_clip.fl(normalize)
-        final_clip.write_videofile(output_path, codec='libx264', fps=FPS, verbose=False, logger=None)
-        clip.close()
-        return None
-    except Exception as e:
-        logging.error(f"Error during filtering: {e}")
-        return f"Error during filtering: {str(e)}"
-
-def process_video_multi_pass(input_path, output_path, desired_duration, motion_threshold, sample_interval, white_threshold, black_threshold, clip_limit, saturation_multiplier, progress_callback, cancel_event):
-    temp_path = f"temp_intermediate_{os.urandom(8).hex()}.mp4"
-    motion_segments = detect_motion_segments(input_path, motion_threshold, sample_interval, cancel_event, progress_callback)
-    if not motion_segments:
-        return "No motion detected"
-    create_intermediate_video(input_path, motion_segments, temp_path, cancel_event, progress_callback)
-    if cancel_event and cancel_event.is_set():
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-        return "Processing canceled by user"
-    error = filter_and_adjust_speed(temp_path, output_path, desired_duration, white_threshold, black_threshold, clip_limit, saturation_multiplier, progress_callback, cancel_event)
-    if os.path.exists(temp_path):
-        os.remove(temp_path)
-    if error:
-        return error
-    if progress_callback:
-        progress_callback("Completed", 100, 0)
-    return None
+### Main Application Class
 
 class VideoProcessorApp:
     def __init__(self, root):
+        """Initialize GUI and app state."""
         self.root = root
         self.root.title(f"Bird Box Video Processor v{VERSION}")
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("dark-blue")
+        
         self.label = ctk.CTkLabel(root, text="Select Input Video")
         self.label.pack(pady=10)
+        
         self.generate_60s = tk.BooleanVar(value=True)
         self.switch_60s = ctk.CTkSwitch(root, text="Generate 60s Video", variable=self.generate_60s)
         self.switch_60s.pack(pady=5)
-        Tooltip(self.switch_60s, "Enable to generate a 60-second summary video.")
+        
         self.generate_12min = tk.BooleanVar(value=True)
         self.switch_12min = ctk.CTkSwitch(root, text="Generate 12min Video", variable=self.generate_12min)
         self.switch_12min.pack(pady=5)
-        Tooltip(self.switch_12min, "Enable to generate a 12-minute summary video.")
-        self.motion_label = ctk.CTkLabel(root, text="Motion Detection Sensitivity")
-        self.motion_label.pack(pady=5)
-        self.motion_slider = ctk.CTkSlider(root, from_=1000, to=10000, number_of_steps=90, command=self.update_motion_threshold)
-        self.motion_slider.set(3000)
-        self.motion_slider.pack(pady=5)
-        Tooltip(self.motion_slider, "Adjusts how sensitive the motion detection is. Lower values detect more motion.")
-        self.motion_value_label = ctk.CTkLabel(root, text="Threshold: 3000")
-        self.motion_value_label.pack(pady=5)
-        self.brightness_label = ctk.CTkLabel(root, text="Brightness Thresholds")
-        self.brightness_label.pack(pady=5)
-        self.white_label = ctk.CTkLabel(root, text="White Threshold")
-        self.white_label.pack(pady=2)
-        self.white_slider = ctk.CTkSlider(root, from_=150, to=255, number_of_steps=105, command=self.update_white_threshold)
-        self.white_slider.set(200)
-        self.white_slider.pack(pady=2)
-        Tooltip(self.white_slider, "Frames brighter than this value are considered 'white' and excluded.")
-        self.white_value_label = ctk.CTkLabel(root, text="White: 200")
-        self.white_value_label.pack(pady=2)
-        self.black_label = ctk.CTkLabel(root, text="Black Threshold")
-        self.black_label.pack(pady=2)
-        self.black_slider = ctk.CTkSlider(root, from_=0, to=100, number_of_steps=100, command=self.update_black_threshold)
-        self.black_slider.set(50)
-        self.black_slider.pack(pady=2)
-        Tooltip(self.black_slider, "Frames darker than this value are considered 'black' and excluded.")
-        self.black_value_label = ctk.CTkLabel(root, text="Black: 50")
-        self.black_value_label.pack(pady=2)
-        self.normalization_label = ctk.CTkLabel(root, text="Normalization Parameters")
-        self.normalization_label.pack(pady=5)
-        self.clip_label = ctk.CTkLabel(root, text="CLAHE Clip Limit")
-        self.clip_label.pack(pady=2)
-        self.clip_slider = ctk.CTkSlider(root, from_=0.5, to=5.0, number_of_steps=90, command=self.update_clip_limit)
-        self.clip_slider.set(1.0)
-        self.clip_slider.pack(pady=2)
-        Tooltip(self.clip_slider, "Controls contrast enhancement. Higher values increase contrast.")
-        self.clip_value_label = ctk.CTkLabel(root, text="Clip Limit: 1.0")
-        self.clip_value_label.pack(pady=2)
-        self.saturation_label = ctk.CTkLabel(root, text="Saturation Multiplier")
-        self.saturation_label.pack(pady=2)
-        self.saturation_slider = ctk.CTkSlider(root, from_=0.5, to=2.0, number_of_steps=150, command=self.update_saturation_multiplier)
-        self.saturation_slider.set(1.1)
-        self.saturation_slider.pack(pady=2)
-        Tooltip(self.saturation_slider, "Adjusts color saturation. Values above 1.0 enhance saturation.")
-        self.saturation_value_label = ctk.CTkLabel(root, text="Saturation: 1.1")
-        self.saturation_value_label.pack(pady=2)
+        
+        self.settings_button = ctk.CTkButton(root, text="Settings", command=self.open_settings)
+        self.settings_button.pack(pady=5)
+        
         self.browse_button = ctk.CTkButton(root, text="Browse", command=self.browse_file)
         self.browse_button.pack(pady=5)
-        self.progress_frame = ctk.CTkFrame(root)
-        self.progress_frame.pack(pady=10)
-        self.progress = ctk.CTkProgressBar(self.progress_frame, orientation="horizontal", mode="determinate", width=300)
-        self.progress.pack(side=tk.LEFT, padx=5)
-        self.percentage_label = ctk.CTkLabel(self.progress_frame, text="0.00%")
-        self.percentage_label.pack(side=tk.LEFT, padx=5)
+        
+        self.progress = ctk.CTkProgressBar(root, orientation="horizontal", mode="determinate", width=300)
+        self.progress.pack(pady=10)
         self.progress.set(0)
+        
         self.current_task_label = ctk.CTkLabel(root, text="Current Task: N/A")
         self.current_task_label.pack(pady=5)
+        
         self.time_label = ctk.CTkLabel(root, text="Estimated Time Remaining: N/A")
         self.time_label.pack(pady=5)
+        
         self.cancel_button = ctk.CTkButton(root, text="Cancel", command=self.cancel_processing, state="disabled")
         self.cancel_button.pack(pady=5)
+        
         self.output_label = ctk.CTkLabel(root, text="Output Files:")
         self.output_label.pack(pady=10)
+        
         self.output_60s = ctk.CTkLabel(root, text="60s Video: N/A")
         self.output_60s.pack(pady=5)
+        
         self.output_12min = ctk.CTkLabel(root, text="12min Video: N/A")
         self.output_12min.pack(pady=5)
+        
         self.input_file = None
         self.cancel_event = threading.Event()
         self.queue = queue.Queue()
         self.start_time = None
         self.root.after(100, self.process_queue)
-
-    def update_motion_threshold(self, value):
-        self.motion_threshold = int(value)
-        self.motion_value_label.configure(text=f"Threshold: {self.motion_threshold}")
-
-    def update_white_threshold(self, value):
-        self.white_threshold = int(value)
-        self.white_value_label.configure(text=f"White: {self.white_threshold}")
-
-    def update_black_threshold(self, value):
-        self.black_threshold = int(value)
-        self.black_value_label.configure(text=f"Black: {self.black_threshold}")
-
-    def update_clip_limit(self, value):
-        self.clip_limit = float(value)
-        self.clip_value_label.configure(text=f"Clip Limit: {self.clip_limit:.1f}")
-
-    def update_saturation_multiplier(self, value):
-        self.saturation_multiplier = float(value)
-        self.saturation_value_label.configure(text=f"Saturation: {self.saturation_multiplier:.1f}")
-
+        
+        # Default settings
+        self.motion_threshold = 4000
+        self.white_threshold = 200
+        self.black_threshold = 50
+        self.clip_limit = 1.0
+        self.saturation_multiplier = 1.1
+        self.min_object_area = 1000
+        
+        # Load settings from file if exists
+        try:
+            with open("settings.json", "r") as f:
+                settings = json.load(f)
+                self.motion_threshold = int(settings.get("motion_threshold", 4000))
+                self.white_threshold = int(settings.get("white_threshold", 200))
+                self.black_threshold = int(settings.get("black_threshold", 50))
+                self.clip_limit = float(settings.get("clip_limit", 1.0))
+                self.saturation_multiplier = float(settings.get("saturation_multiplier", 1.1))
+                self.min_object_area = int(settings.get("min_object_area", 1000))
+        except (FileNotFoundError, json.JSONDecodeError, ValueError):
+            print("Warning: Could not load settings, using defaults")
+    
+    def open_settings(self):
+        """Open settings window with sliders."""
+        self.settings_window = ctk.CTkToplevel(self.root)
+        self.settings_window.title("Settings")
+        
+        # Motion Detection Sensitivity
+        motion_label = ctk.CTkLabel(self.settings_window, text="Motion Detection Sensitivity")
+        motion_label.pack(pady=5)
+        self.motion_slider_settings = ctk.CTkSlider(self.settings_window, from_=1000, to=10000, number_of_steps=90)
+        self.motion_slider_settings.set(self.motion_threshold)
+        self.motion_slider_settings.pack(pady=5)
+        motion_value_label = ctk.CTkLabel(self.settings_window, text=f"Threshold: {self.motion_threshold}")
+        motion_value_label.pack(pady=5)
+        def update_motion_label(value):
+            motion_value_label.configure(text=f"Threshold: {int(float(value))}")
+        self.motion_slider_settings.configure(command=update_motion_label)
+        
+        # White Threshold
+        white_label = ctk.CTkLabel(self.settings_window, text="White Threshold")
+        white_label.pack(pady=2)
+        self.white_slider_settings = ctk.CTkSlider(self.settings_window, from_=150, to=255, number_of_steps=105)
+        self.white_slider_settings.set(self.white_threshold)
+        self.white_slider_settings.pack(pady=2)
+        white_value_label = ctk.CTkLabel(self.settings_window, text=f"White: {self.white_threshold}")
+        white_value_label.pack(pady=2)
+        def update_white_label(value):
+            white_value_label.configure(text=f"White: {int(float(value))}")
+        self.white_slider_settings.configure(command=update_white_label)
+        
+        # Black Threshold
+        black_label = ctk.CTkLabel(self.settings_window, text="Black Threshold")
+        black_label.pack(pady=2)
+        self.black_slider_settings = ctk.CTkSlider(self.settings_window, from_=0, to=100, number_of_steps=100)
+        self.black_slider_settings.set(self.black_threshold)
+        self.black_slider_settings.pack(pady=2)
+        black_value_label = ctk.CTkLabel(self.settings_window, text=f"Black: {self.black_threshold}")
+        black_value_label.pack(pady=2)
+        def update_black_label(value):
+            black_value_label.configure(text=f"Black: {int(float(value))}")
+        self.black_slider_settings.configure(command=update_black_label)
+        
+        # CLAHE Clip Limit
+        clip_label = ctk.CTkLabel(self.settings_window, text="CLAHE Clip Limit")
+        clip_label.pack(pady=2)
+        self.clip_slider_settings = ctk.CTkSlider(self.settings_window, from_=0.5, to=5.0, number_of_steps=90)
+        self.clip_slider_settings.set(self.clip_limit)
+        self.clip_slider_settings.pack(pady=2)
+        clip_value_label = ctk.CTkLabel(self.settings_window, text=f"Clip Limit: {self.clip_limit:.1f}")
+        clip_value_label.pack(pady=2)
+        def update_clip_label(value):
+            clip_value_label.configure(text=f"Clip Limit: {float(value):.1f}")
+        self.clip_slider_settings.configure(command=update_clip_label)
+        
+        # Saturation Multiplier
+        saturation_label = ctk.CTkLabel(self.settings_window, text="Saturation Multiplier")
+        saturation_label.pack(pady=2)
+        self.saturation_slider_settings = ctk.CTkSlider(self.settings_window, from_=0.5, to=2.0, number_of_steps=150)
+        self.saturation_slider_settings.set(self.saturation_multiplier)
+        self.saturation_slider_settings.pack(pady=2)
+        saturation_value_label = ctk.CTkLabel(self.settings_window, text=f"Saturation: {self.saturation_multiplier:.1f}")
+        saturation_value_label.pack(pady=2)
+        def update_saturation_label(value):
+            saturation_value_label.configure(text=f"Saturation: {float(value):.1f}")
+        self.saturation_slider_settings.configure(command=update_saturation_label)
+        
+        # Minimum Object Area
+        min_area_label = ctk.CTkLabel(self.settings_window, text="Minimum Object Area (pixels)")
+        min_area_label.pack(pady=5)
+        self.min_area_slider_settings = ctk.CTkSlider(self.settings_window, from_=500, to=5000, number_of_steps=90)
+        self.min_area_slider_settings.set(self.min_object_area)
+        self.min_area_slider_settings.pack(pady=5)
+        min_area_value_label = ctk.CTkLabel(self.settings_window, text=f"Min Area: {self.min_object_area}")
+        min_area_value_label.pack(pady=5)
+        def update_min_area_label(value):
+            min_area_value_label.configure(text=f"Min Area: {int(float(value))}")
+        self.min_area_slider_settings.configure(command=update_min_area_label)
+        
+        # Save and Reset buttons
+        save_button = ctk.CTkButton(self.settings_window, text="Save", command=self.save_settings)
+        save_button.pack(pady=10)
+        reset_button = ctk.CTkButton(self.settings_window, text="Reset to Default", command=self.reset_to_default)
+        reset_button.pack(pady=10)
+    
+    def save_settings(self):
+        """Save settings from sliders."""
+        self.motion_threshold = int(self.motion_slider_settings.get())
+        self.white_threshold = int(self.white_slider_settings.get())
+        self.black_threshold = int(self.black_slider_settings.get())
+        self.clip_limit = float(self.clip_slider_settings.get())
+        self.saturation_multiplier = float(self.saturation_slider_settings.get())
+        self.min_object_area = int(self.min_area_slider_settings.get())
+        
+        settings = {
+            "motion_threshold": self.motion_threshold,
+            "white_threshold": self.white_threshold,
+            "black_threshold": self.black_threshold,
+            "clip_limit": self.clip_limit,
+            "saturation_multiplier": self.saturation_multiplier,
+            "min_object_area": self.min_object_area
+        }
+        
+        with open("settings.json", "w") as f:
+            json.dump(settings, f)
+        
+        self.settings_window.destroy()
+    
+    def reset_to_default(self):
+        """Reset sliders to default values."""
+        self.motion_slider_settings.set(4000)
+        self.white_slider_settings.set(200)
+        self.black_slider_settings.set(50)
+        self.clip_slider_settings.set(1.0)
+        self.saturation_slider_settings.set(1.1)
+        self.min_area_slider_settings.set(1000)
+        self.save_settings()
+    
     def browse_file(self):
-        logging.info("Browse file button clicked")
+        """Handle file selection and start processing."""
         self.input_file = filedialog.askopenfilename(filetypes=[("Video files", "*.mp4 *.avi *.mkv")])
         if self.input_file:
-            logging.info(f"Selected file: {self.input_file}")
             self.label.configure(text=f"Selected: {os.path.basename(self.input_file)}")
             if not self.generate_60s.get() and not self.generate_12min.get():
                 messagebox.showwarning("Warning", "Please enable at least one video to generate.")
@@ -393,53 +419,56 @@ class VideoProcessorApp:
             self.start_time = time.time()
             self.worker_thread = threading.Thread(target=self.process_video_thread)
             self.worker_thread.start()
-            logging.info("Worker thread started")
-
+    
     def process_video_thread(self):
-        logging.info("Processing thread started")
-        self.queue.put(("task_start", "Loading video...", 0))
+        """Process video in a background thread."""
         selected_videos = []
         if self.generate_60s.get():
             selected_videos.append(("Generate 60s Video", 60))
         if self.generate_12min.get():
             selected_videos.append(("Generate 12min Video", 720))
+        
         base, ext = os.path.splitext(self.input_file)
         output_files = {}
-        cap = cv2.VideoCapture(self.input_file)
-        if not cap.isOpened():
-            logging.error("Failed to open video file")
-            self.queue.put(("canceled", "Failed to open video file"))
-            return
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        cap.release()
+        
         for task_name, desired_duration in selected_videos:
             if self.cancel_event.is_set():
-                logging.info("Processing canceled by user")
                 self.queue.put(("canceled", "User Cancellation"))
                 break
             output_file = f"{base}_{task_name.split()[1]}{ext}"
             self.queue.put(("task_start", task_name, 0))
-            def progress_callback(phase, progress, remaining):
-                self.queue.put(("progress", phase, progress, remaining))
+            
+            def progress_callback(progress, current, total, remaining):
+                percentage = (current / total) * 100 if total > 0 else 0
+                self.queue.put(("progress", progress, percentage, remaining))
+            
             error = process_video_multi_pass(
                 self.input_file, output_file, desired_duration,
-                self.motion_threshold, 20, self.white_threshold, self.black_threshold,
-                self.clip_limit, self.saturation_multiplier, progress_callback, self.cancel_event
+                motion_threshold=self.motion_threshold,
+                sample_interval=5,
+                white_threshold=self.white_threshold,
+                black_threshold=self.black_threshold,
+                clip_limit=self.clip_limit,
+                saturation_multiplier=self.saturation_multiplier,
+                progress_callback=progress_callback,
+                cancel_event=self.cancel_event,
+                min_object_area=self.min_object_area
             )
+            
             if error:
-                logging.error(f"Processing error: {error}")
                 self.queue.put(("canceled", error))
                 break
             else:
                 output_files[task_name] = output_file
                 elapsed = time.time() - self.start_time
                 self.queue.put(("complete", output_files.get("Generate 60s Video"), output_files.get("Generate 12min Video"), elapsed))
-
+    
     def cancel_processing(self):
-        logging.info("Cancel button pressed")
+        """Stop processing."""
         self.cancel_event.set()
-
+    
     def process_queue(self):
+        """Update GUI from queue messages."""
         try:
             while True:
                 message = self.queue.get_nowait()
@@ -447,23 +476,19 @@ class VideoProcessorApp:
         except queue.Empty:
             pass
         self.root.after(100, self.process_queue)
-
+    
     def handle_message(self, message):
+        """Handle queue messages to update UI."""
         if message[0] == "task_start":
             task_name, progress = message[1:]
             self.current_task_label.configure(text=f"Current Task: {task_name}")
             self.progress.set(progress / 100)
-            self.percentage_label.configure(text=f"{progress:.2f}%")
             self.time_label.configure(text="Estimating time...")
         elif message[0] == "progress":
-            phase, progress_value, remaining = message[1:]
-            self.current_task_label.configure(text=f"Current Task: {phase}")
+            progress_value, percentage, remaining = message[1:]
             self.progress.set(progress_value / 100)
-            self.percentage_label.configure(text=f"{progress_value:.2f}%")
-            remaining_min = int(remaining // 60)
-            remaining_sec = int(remaining % 60)
-            time_str = f"{remaining_min} min {remaining_sec} sec"
-            self.time_label.configure(text=f"Est. Time Remaining: {time_str}")
+            remaining_min = remaining / 60 if remaining > 0 else 0
+            self.time_label.configure(text=f"Est. Time Remaining: {remaining_min:.2f} min ({percentage:.2f}%)")
         elif message[0] == "complete":
             output_60s, output_12min, elapsed = message[1:]
             minutes = int(elapsed // 60)
@@ -472,7 +497,6 @@ class VideoProcessorApp:
             self.output_60s.configure(text=f"60s Video: {output_60s if output_60s else 'Not generated'}")
             self.output_12min.configure(text=f"12min Video: {output_12min if output_12min else 'Not generated'}")
             self.current_task_label.configure(text="Current Task: N/A")
-            self.percentage_label.configure(text="100.00%")
             self.time_label.configure(text=f"Process Complete in {time_str}")
             self.reset_ui()
         elif message[0] == "canceled":
@@ -484,15 +508,17 @@ class VideoProcessorApp:
             self.output_60s.configure(text=f"60s Video: Canceled - {reason}")
             self.output_12min.configure(text=f"12min Video: Canceled - {reason}")
             self.current_task_label.configure(text="Current Task: N/A")
-            self.percentage_label.configure(text="0.00%")
             self.time_label.configure(text=f"Process Canceled in {time_str}")
             self.reset_ui()
-
+    
     def reset_ui(self):
+        """Reset UI to initial state."""
         self.switch_60s.configure(state="normal")
         self.switch_12min.configure(state="normal")
         self.browse_button.configure(state="normal")
         self.cancel_button.configure(state="disabled")
+
+### Entry Point
 
 if __name__ == "__main__":
     root = ctk.CTk()
