@@ -304,7 +304,7 @@ class VideoProcessorApp:
         # Motion Detection Sensitivity
         motion_label = ctk.CTkLabel(self.settings_window, text="Motion Detection Sensitivity")
         motion_label.pack(pady=5)
-        self.motion_slider_settings = ctk.CTkSlider(self.settings descendre_window, from_=1000, to=10000, number_of_steps=90)
+        self.motion_slider_settings = ctk.CTkSlider(self.settings_window, from_=1000, to=10000, number_of_steps=90)
         self.motion_slider_settings.set(self.motion_threshold)
         self.motion_slider_settings.pack(pady=5)
         motion_value_label = ctk.CTkLabel(self.settings_window, text=f"Threshold: {self.motion_threshold}")
