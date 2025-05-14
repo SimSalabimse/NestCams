@@ -12,7 +12,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Version number
-VERSION = "5.1.1"  # CPU-optimized version
+VERSION = "5.1.2"  # Fixed progress and added CPU usage setting
 
 ### Helper Functions
 
@@ -82,7 +82,7 @@ def process_chunk(input_path, start_frame, end_frame, sample_interval, motion_th
     cap.release()
     return include_indices
 
-def process_video_multi_pass(input_path, output_path, desired_duration, motion_threshold=4000, sample_interval=5, white_threshold=200, black_threshold=50, clip_limit=1.0, saturation_multiplier=1.1, progress_callback=None, cancel_event=None, min_object_area=1000):
+def process_video_multi_pass(input_path, output_path, desired_duration, motion_threshold=4000, sample_interval=5, white_threshold=200, black_threshold=50, clip_limit=1.0, saturation_multiplier=1.1, progress_callback=None, cancel_event=None, min_object_area=1000, num_threads=24, start_time=None):
     """Process video to select frames with grown birds using multi-threading."""
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
@@ -99,7 +99,6 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
         return "Invalid video properties"
     
     # Step 1: Collect frames with grown birds using multi-threading
-    num_threads = 24  # Optimized for Ryzen 9 5900X (24 threads)
     chunk_size = total_frames // num_threads
     futures = []
     include_indices = []
@@ -233,6 +232,7 @@ class VideoProcessorApp:
         self.clip_limit = 1.0
         self.saturation_multiplier = 1.1
         self.min_object_area = 1000
+        self.num_threads = 24  # Default to max threads
         
         # Load settings from file if exists
         try:
@@ -244,6 +244,7 @@ class VideoProcessorApp:
                 self.clip_limit = float(settings.get("clip_limit", 1.0))
                 self.saturation_multiplier = float(settings.get("saturation_multiplier", 1.1))
                 self.min_object_area = int(settings.get("min_object_area", 1000))
+                self.num_threads = int(settings.get("num_threads", 24))
         except (FileNotFoundError, json.JSONDecodeError, ValueError):
             print("Warning: Could not load settings, using defaults")
     
@@ -252,6 +253,7 @@ class VideoProcessorApp:
         self.settings_window = ctk.CTkToplevel(self.root)
         self.settings_window.title("Settings")
         
+        # Motion Detection Sensitivity
         motion_label = ctk.CTkLabel(self.settings_window, text="Motion Detection Sensitivity")
         motion_label.pack(pady=5)
         self.motion_slider_settings = ctk.CTkSlider(self.settings_window, from_=1000, to=10000, number_of_steps=90)
@@ -263,6 +265,7 @@ class VideoProcessorApp:
             motion_value_label.configure(text=f"Threshold: {int(float(value))}")
         self.motion_slider_settings.configure(command=update_motion_label)
         
+        # White Threshold
         white_label = ctk.CTkLabel(self.settings_window, text="White Threshold")
         white_label.pack(pady=2)
         self.white_slider_settings = ctk.CTkSlider(self.settings_window, from_=150, to=255, number_of_steps=105)
@@ -274,6 +277,7 @@ class VideoProcessorApp:
             white_value_label.configure(text=f"White: {int(float(value))}")
         self.white_slider_settings.configure(command=update_white_label)
         
+        # Black Threshold
         black_label = ctk.CTkLabel(self.settings_window, text="Black Threshold")
         black_label.pack(pady=2)
         self.black_slider_settings = ctk.CTkSlider(self.settings_window, from_=0, to=100, number_of_steps=100)
@@ -285,6 +289,7 @@ class VideoProcessorApp:
             black_value_label.configure(text=f"Black: {int(float(value))}")
         self.black_slider_settings.configure(command=update_black_label)
         
+        # CLAHE Clip Limit
         clip_label = ctk.CTkLabel(self.settings_window, text="CLAHE Clip Limit")
         clip_label.pack(pady=2)
         self.clip_slider_settings = ctk.CTkSlider(self.settings_window, from_=0.5, to=5.0, number_of_steps=90)
@@ -296,6 +301,7 @@ class VideoProcessorApp:
             clip_value_label.configure(text=f"Clip Limit: {float(value):.1f}")
         self.clip_slider_settings.configure(command=update_clip_label)
         
+        # Saturation Multiplier
         saturation_label = ctk.CTkLabel(self.settings_window, text="Saturation Multiplier")
         saturation_label.pack(pady=2)
         self.saturation_slider_settings = ctk.CTkSlider(self.settings_window, from_=0.5, to=2.0, number_of_steps=150)
@@ -307,6 +313,7 @@ class VideoProcessorApp:
             saturation_value_label.configure(text=f"Saturation: {float(value):.1f}")
         self.saturation_slider_settings.configure(command=update_saturation_label)
         
+        # Minimum Object Area
         min_area_label = ctk.CTkLabel(self.settings_window, text="Minimum Object Area (pixels)")
         min_area_label.pack(pady=5)
         self.min_area_slider_settings = ctk.CTkSlider(self.settings_window, from_=500, to=5000, number_of_steps=90)
@@ -317,6 +324,18 @@ class VideoProcessorApp:
         def update_min_area_label(value):
             min_area_value_label.configure(text=f"Min Area: {int(float(value))}")
         self.min_area_slider_settings.configure(command=update_min_area_label)
+        
+        # CPU Threads
+        threads_label = ctk.CTkLabel(self.settings_window, text="CPU Threads (1-24)")
+        threads_label.pack(pady=5)
+        self.threads_slider_settings = ctk.CTkSlider(self.settings_window, from_=1, to=24, number_of_steps=23)
+        self.threads_slider_settings.set(self.num_threads)
+        self.threads_slider_settings.pack(pady=5)
+        threads_value_label = ctk.CTkLabel(self.settings_window, text=f"Threads: {self.num_threads}")
+        threads_value_label.pack(pady=5)
+        def update_threads_label(value):
+            threads_value_label.configure(text=f"Threads: {int(float(value))}")
+        self.threads_slider_settings.configure(command=update_threads_label)
         
         save_button = ctk.CTkButton(self.settings_window, text="Save", command=self.save_settings)
         save_button.pack(pady=10)
@@ -331,6 +350,7 @@ class VideoProcessorApp:
         self.clip_limit = float(self.clip_slider_settings.get())
         self.saturation_multiplier = float(self.saturation_slider_settings.get())
         self.min_object_area = int(self.min_area_slider_settings.get())
+        self.num_threads = int(self.threads_slider_settings.get())
         
         settings = {
             "motion_threshold": self.motion_threshold,
@@ -338,7 +358,8 @@ class VideoProcessorApp:
             "black_threshold": self.black_threshold,
             "clip_limit": self.clip_limit,
             "saturation_multiplier": self.saturation_multiplier,
-            "min_object_area": self.min_object_area
+            "min_object_area": self.min_object_area,
+            "num_threads": self.num_threads
         }
         
         with open("settings.json", "w") as f:
@@ -348,12 +369,13 @@ class VideoProcessorApp:
     
     def reset_to_default(self):
         """Reset sliders to default values."""
-        self.motion_slider_settings.set(4000)
+        self.motion_slider_settings TERM set(4000)
         self.white_slider_settings.set(200)
         self.black_slider_settings.set(50)
         self.clip_slider_settings.set(1.0)
         self.saturation_slider_settings.set(1.1)
         self.min_area_slider_settings.set(1000)
+        self.threads_slider_settings.set(24)
         self.save_settings()
     
     def browse_file(self):
@@ -407,7 +429,9 @@ class VideoProcessorApp:
                 saturation_multiplier=self.saturation_multiplier,
                 progress_callback=progress_callback,
                 cancel_event=self.cancel_event,
-                min_object_area=self.min_object_area
+                min_object_area=self.min_object_area,
+                num_threads=self.num_threads,
+                start_time=self.start_time
             )
             
             if error:
