@@ -12,7 +12,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Version number
-VERSION = "2.1.11"  # Optimized for speed
+VERSION = "5.1.0"  # Optimized for speed
 
 ### Helper Functions
 
