@@ -11,7 +11,7 @@ import uuid
 import json
 
 # Version number
-VERSION = "2.1.10"  # Updated for grown bird detection
+VERSION = "5.0.0"  # Updated for grown bird detection
 
 ### Helper Functions
 
