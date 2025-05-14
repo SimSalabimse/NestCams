@@ -9,7 +9,7 @@ import threading
 import queue
 
 # Version number
-VERSION = "2.0.3"  # Updated for new features
+VERSION = "4.0.0"  # Updated for new features
 
 def compute_motion_score(prev_frame, current_frame, threshold=30):
     """Compute motion score between two frames."""

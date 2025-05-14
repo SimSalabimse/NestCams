@@ -10,7 +10,7 @@ import queue
 import uuid
 
 # Version number
-VERSION = "2.0.4"  # Updated for new features
+VERSION = "4.1.0"  # Updated for new features
 
 def compute_motion_score(prev_frame, current_frame, threshold=30):
     """Compute motion score between two frames."""

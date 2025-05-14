@@ -11,7 +11,7 @@ import queue
 from moviepy.editor import VideoFileClip, concatenate_videoclips
 from concurrent.futures import ThreadPoolExecutor
 
-VERSION = "2.1.4"
+VERSION = "4.2.0"
 FPS = 24
 FRAME_WIDTH = 1920
 FRAME_HEIGHT = 1080

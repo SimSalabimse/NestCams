@@ -10,7 +10,7 @@ import queue
 import uuid
 
 # Version number
-VERSION = "2.0.5"  # Reflects integration of adjustable settings
+VERSION = "4.3.0"  # Reflects integration of adjustable settings
 
 ### Helper Functions
 

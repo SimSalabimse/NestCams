@@ -11,7 +11,7 @@ import uuid
 import json
 
 # Version number
-VERSION = "2.0.6"  # Updated to reflect settings page addition
+VERSION = "4.4.0"  # Updated to reflect settings page addition
 
 ### Helper Functions
 
