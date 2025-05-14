@@ -57,7 +57,7 @@ def detect_grown_bird(frame, prev_frame, motion_threshold=4000, min_object_area=
     gray_curr = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     diff = cv2.absdiff(gray_prev, gray_curr)
     _, thresh = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APROX_SIMPLE)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     for contour in contours:
         if cv2.contourArea(contour) > min_object_area:
             return True
@@ -177,7 +177,7 @@ class VideoProcessorApp:
         """Initialize GUI and app state."""
         self.root = root
         self.root.title(f"Bird Box Video Processor v{VERSION}")
-        ctk.set_appearance_mode("dark")
+        ctk.set_appearance_mode("dark")  # Fixed typo: was set_appearance_vec
         ctk.set_default_color_theme("dark-blue")
         
         self.label = ctk.CTkLabel(root, text="Select Input Video")
@@ -369,7 +369,7 @@ class VideoProcessorApp:
     
     def reset_to_default(self):
         """Reset sliders to default values."""
-        self.motion_slider_settings TERM set(4000)
+        self.motion_slider_settings.set(4000)
         self.white_slider_settings.set(200)
         self.black_slider_settings.set(50)
         self.clip_slider_settings.set(1.0)
