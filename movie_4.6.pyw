@@ -11,7 +11,7 @@ import uuid
 import json
 
 # Version number
-VERSION = "4.5.0"  # Updated to reflect bug fix
+VERSION = "4.6.0"  # Updated for rotation and expanded settings
 
 ### Helper Functions
 
@@ -59,10 +59,12 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
     
     if total_frames <= 0 or fps <= 0:
-        cap.release()
         return "Invalid video properties"
+    
+    rotate = desired_duration == 60  # Rotate only for 60-second videos
     
     # Step 1: Collect all frames with motion across the entire video
     temp_path1 = f"temp_intermediate_{uuid.uuid4().hex}.mp4"
@@ -72,6 +74,7 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
     start_time = time.time()
     
     print(f"Pass 1: Collecting all frames with motion from {total_frames} total frames")
+    cap = cv2.VideoCapture(input_path)
     for frame_idx in range(total_frames):
         if cancel_event and cancel_event.is_set():
             cap.release()
@@ -161,7 +164,12 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
     # Step 3: Trim to final length with even distribution
     target_frames = int(desired_duration * fps)
     cap = cv2.VideoCapture(temp_path2)
-    out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
+    
+    # Set output dimensions based on rotation
+    if rotate:
+        out = cv2.VideoWriter(output_path, fourcc, fps, (frame_height, frame_width))
+    else:
+        out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
     
     if len(filtered_indices) > target_frames:
         step = len(filtered_indices) / target_frames
@@ -187,6 +195,8 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
                 out.release()
                 os.remove(temp_path2)
                 return "Memory error during processing"
+            if rotate:
+                normalized_frame = cv2.rotate(normalized_frame, cv2.ROTATE_90_CLOCKWISE)
             out.write(normalized_frame)
         
         # Progress for Pass 3 (66-100%)
@@ -281,10 +291,10 @@ class VideoProcessorApp:
         self.settings_window = ctk.CTkToplevel(self.root)
         self.settings_window.title("Settings")
         
-        # Motion Detection Sensitivity
+        # Motion Detection Sensitivity (expanded range)
         motion_label = ctk.CTkLabel(self.settings_window, text="Motion Detection Sensitivity")
         motion_label.pack(pady=5)
-        self.motion_slider_settings = ctk.CTkSlider(self.settings_window, from_=1000, to=10000, number_of_steps=90)
+        self.motion_slider_settings = ctk.CTkSlider(self.settings_window, from_=500, to=20000, number_of_steps=195)
         self.motion_slider_settings.set(self.motion_threshold)
         self.motion_slider_settings.pack(pady=5)
         motion_value_label = ctk.CTkLabel(self.settings_window, text=f"Threshold: {self.motion_threshold}")
@@ -293,10 +303,10 @@ class VideoProcessorApp:
             motion_value_label.configure(text=f"Threshold: {int(float(value))}")
         self.motion_slider_settings.configure(command=update_motion_label)
         
-        # White Threshold
+        # White Threshold (expanded range)
         white_label = ctk.CTkLabel(self.settings_window, text="White Threshold")
         white_label.pack(pady=2)
-        self.white_slider_settings = ctk.CTkSlider(self.settings_window, from_=150, to=255, number_of_steps=105)
+        self.white_slider_settings = ctk.CTkSlider(self.settings_window, from_=100, to=255, number_of_steps=155)
         self.white_slider_settings.set(self.white_threshold)
         self.white_slider_settings.pack(pady=2)
         white_value_label = ctk.CTkLabel(self.settings_window, text=f"White: {self.white_threshold}")
