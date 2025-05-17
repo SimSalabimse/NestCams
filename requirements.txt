@@ -2,3 +2,4 @@ customtkinter
 opencv-python
 moviepy
 numpy
+Pillow
