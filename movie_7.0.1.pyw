@@ -18,7 +18,7 @@ import pickle
 import subprocess
 
 # Version number
-VERSION = "7.0.1"  # Added music selection and integration
+VERSION = "7.0.2"  # Updated to fix YouTube processing and Shorts upload
 
 ### Helper Functions
 
@@ -56,7 +56,7 @@ def normalize_frame(frame, clip_limit=1.0, saturation_multiplier=1.1):
         return None
 
 def process_video_multi_pass(input_path, output_path, desired_duration, motion_threshold=3000, sample_interval=5, white_threshold=200, black_threshold=50, clip_limit=1.0, saturation_multiplier=1.1, output_format='mp4', progress_callback=None, cancel_event=None, music_path=None):
-    """Process video in multiple passes with optional music integration."""
+    """Process video in multiple passes with H.264 encoding and optional music integration."""
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
         print("Error: Could not open video file")
@@ -166,7 +166,7 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
     out.release()
     os.remove(temp_path1)
     
-    # Final pass: Normalize and add music
+    # Final pass: Normalize and prepare for encoding
     target_frames = int(desired_duration * fps)
     cap = cv2.VideoCapture(temp_path2)
     temp_final_path = f"temp_final_{uuid.uuid4().hex}.{output_format}"
@@ -210,19 +210,20 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
     out.release()
     os.remove(temp_path2)
     
-    # Add music if selected
+    # Encode to H.264 with or without music
     if music_path and os.path.exists(music_path):
         try:
             cmd = [
                 'ffmpeg',
-                '-stream_loop', '-1',  # Loop music indefinitely
-                '-i', music_path,      # Audio input
-                '-i', temp_final_path, # Video input
-                '-c:v', 'copy',        # Copy video stream without re-encoding
-                '-c:a', 'aac',         # Encode audio to AAC
-                '-shortest',           # Match duration to shortest input (video)
-                '-y',                  # Overwrite output file
-                output_path            # Final output path
+                '-stream_loop', '-1',      # Loop music indefinitely
+                '-i', music_path,          # Audio input
+                '-i', temp_final_path,     # Video input
+                '-c:v', 'libx264',         # Re-encode video to H.264
+                '-preset', 'medium',       # Balance speed and quality
+                '-c:a', 'aac',             # Encode audio to AAC
+                '-shortest',               # Match duration to shortest input (video)
+                '-y',                      # Overwrite output file
+                output_path                # Final output path
             ]
             subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
             os.remove(temp_final_path)
@@ -231,7 +232,22 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
             print(f"Error adding music: {e.stderr.decode()}")
             os.rename(temp_final_path, output_path)
     else:
-        os.rename(temp_final_path, output_path)
+        try:
+            cmd = [
+                'ffmpeg',
+                '-i', temp_final_path,     # Video input
+                '-c:v', 'libx264',         # Re-encode video to H.264
+                '-preset', 'medium',       # Balance speed and quality
+                '-an',                     # No audio
+                '-y',                      # Overwrite output file
+                output_path                # Final output path
+            ]
+            subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+            os.remove(temp_final_path)
+            print(f"Video re-encoded to H.264 at {output_path}")
+        except subprocess.CalledProcessError as e:
+            print(f"Error re-encoding video: {e.stderr.decode()}")
+            os.rename(temp_final_path, output_path)
     
     return None if final_indices else "No frames written after trimming"
 
@@ -737,7 +753,6 @@ class VideoProcessorApp:
                 file_frame.pack(fill='x', pady=2)
                 label = ctk.CTkLabel(file_frame, text=f"{task}: {file}")
                 label.pack(side=tk.LEFT, padx=5)
-                # Fix: Define the button first, then configure its command
                 upload_button = ctk.CTkButton(file_frame, text="Upload to YouTube")
                 upload_button.configure(command=lambda f=file, t=task, b=upload_button: self.start_upload(f, t, b))
                 upload_button.pack(side=tk.RIGHT, padx=5)
@@ -798,18 +813,24 @@ class VideoProcessorApp:
         thread.start()
     
     def upload_to_youtube(self, file_path, task_name, button):
-        """Upload video to YouTube as unlisted."""
+        """Upload video to YouTube as unlisted, with Shorts designation for 60s videos."""
         try:
             youtube = self.get_youtube_client()
             if not youtube:
                 return
             duration_str = task_name.split()[1]  # e.g., "60s"
             title = f"Bird Box Video - {duration_str}"
+            description = "Uploaded via Bird Box Video Processor"
+            tags = ['bird', 'nature', 'video']
+            if duration_str == "60s":
+                title += " #shorts"
+                description += " #shorts"
+                tags.append('#shorts')
             request_body = {
                 'snippet': {
                     'title': title,
-                    'description': 'Uploaded via Bird Box Video Processor',
-                    'tags': ['bird', 'nature', 'video'],
+                    'description': description,
+                    'tags': tags,
                     'categoryId': '22'  # People & Blogs
                 },
                 'status': {
