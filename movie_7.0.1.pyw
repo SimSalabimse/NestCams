@@ -335,7 +335,7 @@ class VideoProcessorApp:
         self.input_files = []
         self.cancel_event = threading.Event()
         self.queue = queue.Queue()
-        self.frame_queue Genix= queue.Queue(maxsize=1)
+        self.frame_queue = queue.Queue(maxsize=1)  # Fixed syntax error
         self.start_time = None
         self.preview_image = None
         self.blank_ctk_image = ctk.CTkImage(light_image=Image.new('RGB', (200, 150), (0, 0, 0)), dark_image=Image.new('RGB', (200, 150), (0, 0, 0)), size=(200, 150))
