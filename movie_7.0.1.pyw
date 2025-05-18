@@ -16,9 +16,16 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 import pickle
 import subprocess
+import logging
+import socket
+from googleapiclient.errors import HttpError
+import httplib2
 
 # Version number
 VERSION = "7.0.2"  # Updated to fix YouTube processing and Shorts upload
+
+# Set up logging
+logging.basicConfig(filename='upload_log.txt', level=logging.ERROR)
 
 ### Helper Functions
 
@@ -783,7 +790,7 @@ class VideoProcessorApp:
         self.cancel_button.configure(state="disabled")
     
     def get_youtube_client(self):
-        """Get authenticated YouTube API client."""
+        """Get authenticated YouTube API client with increased timeout."""
         if not hasattr(self, 'youtube_client'):
             credentials = None
             if os.path.exists('token.pickle'):
@@ -803,7 +810,9 @@ class VideoProcessorApp:
                     credentials = flow.run_local_server(port=0)
                 with open('token.pickle', 'wb') as token:
                     pickle.dump(credentials, token)
-            self.youtube_client = build('youtube', 'v3', credentials=credentials)
+            # Create an Http object with increased timeout (5 minutes)
+            http = httplib2.Http(timeout=300)
+            self.youtube_client = build('youtube', 'v3', credentials=credentials, http=http)
         return self.youtube_client
     
     def start_upload(self, file_path, task_name, button):
@@ -813,40 +822,53 @@ class VideoProcessorApp:
         thread.start()
     
     def upload_to_youtube(self, file_path, task_name, button):
-        """Upload video to YouTube as unlisted, with Shorts designation for 60s videos."""
-        try:
-            youtube = self.get_youtube_client()
-            if not youtube:
-                return
-            duration_str = task_name.split()[1]  # e.g., "60s"
-            title = f"Bird Box Video - {duration_str}"
-            description = "Uploaded via Bird Box Video Processor"
-            tags = ['bird', 'nature', 'video']
-            if duration_str == "60s":
-                title += " #shorts"
-                description += " #shorts"
-                tags.append('#shorts')
-            request_body = {
-                'snippet': {
-                    'title': title,
-                    'description': description,
-                    'tags': tags,
-                    'categoryId': '22'  # People & Blogs
-                },
-                'status': {
-                    'privacyStatus': 'unlisted'
+        """Upload video to YouTube as unlisted, with Shorts designation for 60s videos and retry mechanism."""
+        max_retries = 3
+        retry_delay = 10  # seconds
+        for attempt in range(max_retries):
+            try:
+                youtube = self.get_youtube_client()
+                if not youtube:
+                    return
+                duration_str = task_name.split()[1]  # e.g., "60s"
+                title = f"Bird Box Video - {duration_str}"
+                description = "Uploaded via Bird Box Video Processor"
+                tags = ['bird', 'nature', 'video']
+                if duration_str == "60s":
+                    title += " #shorts"
+                    description += " #shorts"
+                    tags.append('#shorts')
+                request_body = {
+                    'snippet': {
+                        'title': title,
+                        'description': description,
+                        'tags': tags,
+                        'categoryId': '22'  # People & Blogs
+                    },
+                    'status': {
+                        'privacyStatus': 'unlisted'
+                    }
                 }
-            }
-            media = MediaFileUpload(file_path)
-            request = youtube.videos().insert(
-                part='snippet,status',
-                body=request_body,
-                media_body=media
-            )
-            response = request.execute()
-            self.root.after(0, lambda: messagebox.showinfo("Success", f"Video uploaded: https://youtu.be/{response['id']}"))
-        except Exception as e:
-            self.root.after(0, lambda e=e: messagebox.showerror("Error", f"Failed to upload video: {str(e)}"))
+                media = MediaFileUpload(file_path, resumable=True)
+                request = youtube.videos().insert(
+                    part='snippet,status',
+                    body=request_body,
+                    media_body=media
+                )
+                response = request.execute()
+                self.root.after(0, lambda: messagebox.showinfo("Success", f"Video uploaded: https://youtu.be/{response['id']}"))
+                break  # Exit the loop if successful
+            except (socket.timeout, HttpError) as e:
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    logging.error("Upload failed after retries", exc_info=True)
+                    self.root.after(0, lambda e=e: messagebox.showerror("Error", f"Failed to upload video: {str(e)}"))
+            except Exception as e:
+                logging.error("Unexpected error during upload", exc_info=True)
+                self.root.after(0, lambda e=e: messagebox.showerror("Error", f"Failed to upload video: {str(e)}"))
+                break
         finally:
             self.root.after(0, lambda b=button: b.configure(state="normal", text="Upload to YouTube"))
 
