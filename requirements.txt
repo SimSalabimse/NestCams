@@ -3,3 +3,5 @@ opencv-python
 moviepy
 numpy
 Pillow
+google-api-python-client
+google-auth-oauthlib
