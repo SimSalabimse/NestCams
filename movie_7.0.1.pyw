@@ -335,7 +335,7 @@ class VideoProcessorApp:
         self.input_files = []
         self.cancel_event = threading.Event()
         self.queue = queue.Queue()
-        self.frame_queue = queue.Queue(maxsize=1)
+        self.frame_queue Genix= queue.Queue(maxsize=1)
         self.start_time = None
         self.preview_image = None
         self.blank_ctk_image = ctk.CTkImage(light_image=Image.new('RGB', (200, 150), (0, 0, 0)), dark_image=Image.new('RGB', (200, 150), (0, 0, 0)), size=(200, 150))
@@ -869,8 +869,8 @@ class VideoProcessorApp:
                 logging.error("Unexpected error during upload", exc_info=True)
                 self.root.after(0, lambda e=e: messagebox.showerror("Error", f"Failed to upload video: {str(e)}"))
                 break
-        finally:
-            self.root.after(0, lambda b=button: b.configure(state="normal", text="Upload to YouTube"))
+            finally:
+                self.root.after(0, lambda b=button: b.configure(state="normal", text="Upload to YouTube"))
 
 ### Entry Point
 
