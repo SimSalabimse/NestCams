@@ -737,7 +737,9 @@ class VideoProcessorApp:
                 file_frame.pack(fill='x', pady=2)
                 label = ctk.CTkLabel(file_frame, text=f"{task}: {file}")
                 label.pack(side=tk.LEFT, padx=5)
-                upload_button = ctk.CTkButton(file_frame, text="Upload to YouTube", command=lambda f=file, t=task, b=upload_button: self.start_upload(f, t, b))
+                # Fix: Define the button first, then configure its command
+                upload_button = ctk.CTkButton(file_frame, text="Upload to YouTube")
+                upload_button.configure(command=lambda f=file, t=task, b=upload_button: self.start_upload(f, t, b))
                 upload_button.pack(side=tk.RIGHT, padx=5)
             self.current_task_label.configure(text="Current Task: N/A")
             self.time_label.configure(text=f"Process Complete in {time_str}")
