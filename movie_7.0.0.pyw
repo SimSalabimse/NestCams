@@ -17,7 +17,7 @@ from google.auth.transport.requests import Request
 import pickle
 
 # Version number
-VERSION = "6.0.5"  # Added 1-hour option and YouTube upload
+VERSION = "7.0.0"  # Added 1-hour option and YouTube upload
 
 ### Helper Functions
 
