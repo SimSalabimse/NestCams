@@ -846,9 +846,9 @@ class VideoProcessorApp:
             response = request.execute()
             self.root.after(0, lambda: messagebox.showinfo("Success", f"Video uploaded: https://youtu.be/{response['id']}"))
         except Exception as e:
-            self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to upload video: {str(e)}"))
+            self.root.after(0, lambda e=e: messagebox.showerror("Error", f"Failed to upload video: {str(e)}"))
         finally:
-            self.root.after(0, lambda: button.configure(state="normal", text="Upload to YouTube"))
+            self.root.after(0, lambda b=button: b.configure(state="normal", text="Upload to YouTube"))
 
 ### Entry Point
 
