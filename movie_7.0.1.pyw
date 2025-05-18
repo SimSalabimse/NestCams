@@ -833,7 +833,7 @@ class VideoProcessorApp:
                 duration_str = task_name.split()[1]  # e.g., "60s"
                 title = f"Bird Box Video - {duration_str}"
                 description = "Uploaded via Bird Box Video Processor"
-                tags = ['bird', 'nature', 'video']
+                tags = ['bird', 'nature', 'video']  # Corrected from 'selalu'
                 if duration_str == "60s":
                     title += " #shorts"
                     description += " #shorts"
