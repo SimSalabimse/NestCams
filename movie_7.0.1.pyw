@@ -19,6 +19,7 @@ import subprocess
 import logging
 import requests
 from datetime import datetime
+import tempfile
 
 try:
     import speedtest
@@ -27,12 +28,12 @@ except ImportError:
     logging.warning("speedtest module not found. Network stability checks will be limited.")
 
 # Version number
-VERSION = "7.1.0"  # Updated to fix progress bar, video playback, and add session log
+VERSION = "7.1.0"
 
 # Set up debug logging
 logging.basicConfig(filename='upload_log.txt', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Set up session logging (user-friendly)
+# Set up session logging
 session_log_file = f"session_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
 session_logger = logging.getLogger('session')
 session_handler = logging.FileHandler(session_log_file)
@@ -86,6 +87,16 @@ def normalize_frame(frame, clip_limit=1.0, saturation_multiplier=1.1):
         log_session("Error: Memory issue while normalizing frame")
         return None
 
+def read_frame(video_path, frame_idx):
+    """Read a specific frame from a video."""
+    cap = cv2.VideoCapture(video_path)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+    ret, frame = cap.read()
+    cap.release()
+    if not ret:
+        raise ValueError(f"Failed to read frame {frame_idx} from {video_path}")
+    return frame
+
 def validate_video_file(file_path):
     """Validate video file using FFmpeg."""
     try:
@@ -131,7 +142,7 @@ def check_network_stability():
 def process_video_multi_pass(input_path, output_path, desired_duration, motion_threshold=3000, sample_interval=5, 
                              white_threshold=200, black_threshold=50, clip_limit=1.0, saturation_multiplier=1.1, 
                              output_format='mp4', progress_callback=None, cancel_event=None, music_path=None, status_callback=None):
-    """Process video with motion detection and error handling."""
+    """Process video by saving frames as images and assembling with FFmpeg."""
     try:
         logging.info(f"Starting video processing for {input_path}")
         log_session(f"Starting video processing for {input_path}")
@@ -157,195 +168,147 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
         cap.release()
 
         rotate = desired_duration == 60
-        format_codecs = {'mp4': 'H264', 'avi': 'XVID', 'mkv': 'X264'}
-        fourcc = cv2.VideoWriter_fourcc(*format_codecs.get(output_format, 'H264'))
         start_time = time.time()
 
-        # Pass 1: Motion Detection
-        if status_callback:
-            status_callback("Analyzing motion...")
-        logging.info("Starting motion detection pass")
-        log_session("Starting motion detection pass")
-        temp_path1 = f"temp_motion_{uuid.uuid4().hex}.{output_format}"
-        cap = cv2.VideoCapture(input_path)
-        out = cv2.VideoWriter(temp_path1, fourcc, fps, (frame_width, frame_height))
-        prev_frame = None
-        frame_idx = 0
-        motion_frames = 0
-        while True:
-            if cancel_event and cancel_event.is_set():
-                cap.release()
-                out.release()
-                os.remove(temp_path1)
-                logging.info("Motion detection canceled")
-                log_session("Motion detection canceled by user")
-                return "Processing canceled by user"
-            ret, frame = cap.read()
-            if not ret:
-                break
-            if frame_idx % sample_interval == 0 and prev_frame is not None:
-                motion_score = compute_motion_score(prev_frame, frame)
-                if motion_score > motion_threshold:
-                    out.write(frame)
-                    motion_frames += 1
-            prev_frame = frame
-            frame_idx += 1
-            if progress_callback and frame_idx % 100 == 0:
-                progress = (frame_idx / total_frames) * 33  # 0 to 33%
-                elapsed = time.time() - start_time
-                rate = frame_idx / elapsed if elapsed > 0 else 1e-6
-                remaining = (total_frames - frame_idx) / rate if rate > 0 else 0
-                progress_callback(progress, frame_idx, total_frames, remaining)
-        cap.release()
-        out.release()
-        logging.info("Motion detection pass completed")
-        log_session(f"Motion detection pass completed, {motion_frames} frames with motion detected")
-        if status_callback:
-            status_callback("Motion detection completed")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Motion Detection
+            if status_callback:
+                status_callback("Analyzing motion...")
+            logging.info("Starting motion detection pass")
+            log_session("Starting motion detection pass")
+            cap = cv2.VideoCapture(input_path)
+            prev_frame = None
+            motion_frames = []
+            for frame_idx in range(total_frames):
+                if cancel_event and cancel_event.is_set():
+                    cap.release()
+                    return "Processing canceled by user"
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if frame_idx % sample_interval == 0 and prev_frame is not None:
+                    motion_score = compute_motion_score(prev_frame, frame)
+                    if motion_score > motion_threshold:
+                        motion_frames.append(frame_idx)
+                prev_frame = frame
+                if progress_callback and frame_idx % 100 == 0:
+                    progress = (frame_idx / total_frames) * 30  # 0 to 30%
+                    elapsed = time.time() - start_time
+                    rate = frame_idx / elapsed if elapsed > 0 else 1e-6
+                    remaining = (total_frames - frame_idx) / rate if rate > 0 else 0
+                    progress_callback(progress, frame_idx, total_frames, remaining)
+            cap.release()
+            logging.info(f"Motion detection completed, {len(motion_frames)} frames selected")
+            log_session(f"Motion detection completed, {len(motion_frames)} frames selected")
+            if status_callback:
+                status_callback("Motion detection completed")
 
-        # Pass 2: Filter White/Black Frames
-        if status_callback:
-            status_callback("Filtering frames...")
-        logging.info("Starting frame filtering pass")
-        log_session("Starting frame filtering pass")
-        temp_path2 = f"temp_filtered_{uuid.uuid4().hex}.{output_format}"
-        cap = cv2.VideoCapture(temp_path1)
-        out = cv2.VideoWriter(temp_path2, fourcc, fps, (frame_width, frame_height))
-        filtered_frames = 0
-        frame_idx = 0
-        total_temp_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        while True:
-            if cancel_event and cancel_event.is_set():
-                cap.release()
-                out.release()
-                os.remove(temp_path1)
-                os.remove(temp_path2)
-                logging.info("Frame filtering canceled")
-                log_session("Frame filtering canceled by user")
-                return "Processing canceled by user"
-            ret, frame = cap.read()
-            if not ret:
-                break
-            if not is_white_or_black_frame(frame, white_threshold, black_threshold):
-                out.write(frame)
-                filtered_frames += 1
-            frame_idx += 1
-            if progress_callback and frame_idx % 50 == 0:
-                progress = 33 + (frame_idx / total_temp_frames) * 33  # 33 to 66%
-                elapsed = time.time() - start_time
-                rate = frame_idx / elapsed if elapsed > 0 else 1e-6
-                remaining = (total_temp_frames - frame_idx) / rate if rate > 0 else 0
-                progress_callback(progress, frame_idx, total_temp_frames, remaining)
-        cap.release()
-        out.release()
-        os.remove(temp_path1)
-        logging.info(f"Frame filtering pass completed, {filtered_frames} frames kept")
-        log_session(f"Frame filtering pass completed, {filtered_frames} frames kept")
-        if status_callback:
-            status_callback("Frame filtering completed")
+            # Filtering Frames
+            if status_callback:
+                status_callback("Filtering frames...")
+            logging.info("Starting frame filtering")
+            log_session("Starting frame filtering")
+            filtered_frames = []
+            for frame_idx in motion_frames:
+                frame = read_frame(input_path, frame_idx)
+                if not is_white_or_black_frame(frame, white_threshold, black_threshold):
+                    filtered_frames.append(frame_idx)
+            logging.info(f"Frame filtering completed, {len(filtered_frames)} frames kept")
+            log_session(f"Frame filtering completed, {len(filtered_frames)} frames kept")
+            if status_callback:
+                status_callback("Frame filtering completed")
 
-        # Pass 3: Final Video Assembly
-        if status_callback:
-            status_callback("Assembling final video...")
-        logging.info("Starting final video assembly")
-        log_session("Starting final video assembly")
-        temp_final_path = f"temp_final_{uuid.uuid4().hex}.{output_format}"
-        cap = cv2.VideoCapture(temp_path2)
-        out = cv2.VideoWriter(temp_final_path, fourcc, fps, (frame_height, frame_width) if rotate else (frame_width, frame_height))
-        target_frames = int(desired_duration * fps)
-        total_filtered_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        step = max(1, total_filtered_frames // target_frames) if total_filtered_frames > target_frames else 1
-        frame_idx = 0
-        written_frames = 0
-        while True:
-            if cancel_event and cancel_event.is_set():
-                cap.release()
-                out.release()
-                os.remove(temp_path2)
-                os.remove(temp_final_path)
-                logging.info("Final assembly canceled")
-                log_session("Final video assembly canceled by user")
-                return "Processing canceled by user"
-            ret, frame = cap.read()
-            if not ret:
-                break
-            if frame_idx % step == 0 and written_frames < target_frames:
+            # Select Frames for Final Video
+            target_frames_count = int(desired_duration * fps)
+            if len(filtered_frames) > target_frames_count:
+                step = len(filtered_frames) / target_frames_count
+                selected_frames = [filtered_frames[int(i * step)] for i in range(target_frames_count)]
+            else:
+                selected_frames = filtered_frames
+
+            # Save Selected Frames as Images
+            if status_callback:
+                status_callback("Saving processed frames...")
+            logging.info("Saving processed frames")
+            log_session("Saving processed frames")
+            frame_counter = 0
+            for frame_idx in selected_frames:
+                if cancel_event and cancel_event.is_set():
+                    return "Processing canceled by user"
+                frame = read_frame(input_path, frame_idx)
                 normalized_frame = normalize_frame(frame, clip_limit, saturation_multiplier)
                 if normalized_frame is None:
-                    cap.release()
-                    out.release()
-                    os.remove(temp_path2)
-                    os.remove(temp_final_path)
-                    logging.error("Memory error during normalization")
-                    log_session("Error: Memory error during final video assembly")
+                    logging.error("Failed to normalize frame")
+                    log_session("Error: Failed to normalize frame")
                     return "Memory error during processing"
                 if rotate:
                     normalized_frame = cv2.rotate(normalized_frame, cv2.ROTATE_90_CLOCKWISE)
-                out.write(normalized_frame)
-                written_frames += 1
-            frame_idx += 1
-            if progress_callback and frame_idx % 10 == 0:
-                progress = 66 + (frame_idx / total_filtered_frames) * 34  # 66 to 100%
-                elapsed = time.time() - start_time
-                rate = frame_idx / elapsed if elapsed > 0 else 1e-6
-                remaining = (total_filtered_frames - frame_idx) / rate if rate > 0 else 0
-                progress_callback(progress, frame_idx, total_filtered_frames, remaining)
-        cap.release()
-        out.release()
-        os.remove(temp_path2)
-        logging.info(f"Final video assembled with {written_frames} frames")
-        log_session(f"Final video assembled with {written_frames} frames")
-        if status_callback:
-            status_callback("Final video assembled")
-
-        # Finalize with FFmpeg
-        if music_path and os.path.exists(music_path):
+                cv2.imwrite(os.path.join(temp_dir, f"frame_{frame_counter:04d}.jpg"), normalized_frame)
+                frame_counter += 1
+                if progress_callback and frame_counter % 10 == 0:
+                    progress = 30 + (frame_counter / len(selected_frames)) * 30  # 30 to 60%
+                    elapsed = time.time() - start_time
+                    rate = frame_counter / elapsed if elapsed > 0 else 1e-6
+                    remaining = (len(selected_frames) - frame_counter) / rate if rate > 0 else 0
+                    progress_callback(progress, frame_counter, len(selected_frames), remaining)
+            logging.info(f"Saved {frame_counter} frames to temporary directory")
+            log_session(f"Saved {frame_counter} frames to temporary directory")
             if status_callback:
-                status_callback("Adding music...")
-            logging.info("Adding music with FFmpeg")
-            log_session("Adding music with FFmpeg")
-            try:
-                cmd = ['ffmpeg', '-stream_loop', '-1', '-i', music_path, '-i', temp_final_path,
-                       '-c:v', 'libx264', '-preset', 'medium', '-c:a', 'aac', '-shortest', '-pix_fmt', 'yuv420p', '-y', output_path]
-                subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=600)
-                os.remove(temp_final_path)
+                status_callback("Frames saved")
+
+            if frame_counter == 0:
+                logging.warning("No frames selected for the final video")
+                log_session("Warning: No frames selected for the final video")
+                return "No frames written after processing"
+
+            # Create Video with FFmpeg
+            if status_callback:
+                status_callback("Creating video from frames...")
+            logging.info("Creating video from frames with FFmpeg")
+            log_session("Creating video from frames with FFmpeg")
+            if progress_callback:
+                progress_callback(60, 0, 0, 0)  # Set to 60% before FFmpeg
+            temp_final_path = f"temp_final_{uuid.uuid4().hex}.mp4"
+            cmd = [
+                'ffmpeg', '-framerate', str(fps), '-i', os.path.join(temp_dir, 'frame_%04d.jpg'),
+                '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-y', temp_final_path
+            ]
+            subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+            logging.info("Video created from frames")
+            log_session("Video created from frames")
+
+            # Add Music or Silent Audio
+            if music_path and os.path.exists(music_path):
+                if status_callback:
+                    status_callback("Adding music...")
+                logging.info("Adding music with FFmpeg")
+                log_session("Adding music with FFmpeg")
+                cmd = [
+                    'ffmpeg', '-stream_loop', '-1', '-i', music_path, '-i', temp_final_path,
+                    '-c:v', 'copy', '-c:a', 'aac', '-shortest', '-y', output_path
+                ]
+                subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
                 logging.info(f"Music added to {output_path}")
                 log_session(f"Music added to {output_path}")
-            except subprocess.TimeoutExpired:
-                logging.error("FFmpeg music addition timed out")
-                log_session("Error: FFmpeg music addition timed out")
-                os.rename(temp_final_path, output_path)
-                return "FFmpeg timeout during music addition"
-            except subprocess.CalledProcessError as e:
-                logging.error(f"Music addition failed: {e.stderr.decode()}")
-                log_session(f"Error: Music addition failed: {e.stderr.decode()}")
-                os.rename(temp_final_path, output_path)
-        else:
-            if status_callback:
-                status_callback("Re-encoding video...")
-            logging.info("Re-encoding video with FFmpeg")
-            log_session("Re-encoding video with FFmpeg")
-            try:
-                # Include a silent audio stream for compatibility
-                cmd = ['ffmpeg', '-i', temp_final_path, '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
-                       '-c:v', 'libx264', '-preset', 'medium', '-c:a', 'aac', '-shortest', '-pix_fmt', 'yuv420p', '-y', output_path]
-                subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=600)
-                os.remove(temp_final_path)
-                logging.info(f"Re-encoded to {output_path}")
-                log_session(f"Re-encoded to {output_path}")
-            except subprocess.TimeoutExpired:
-                logging.error("FFmpeg re-encoding timed out")
-                log_session("Error: FFmpeg re-encoding timed out")
-                os.rename(temp_final_path, output_path)
-                return "FFmpeg timeout during re-encoding"
-            except subprocess.CalledProcessError as e:
-                logging.error(f"Re-encoding failed: {e.stderr.decode()}")
-                log_session(f"Error: Re-encoding failed: {e.stderr.decode()}")
-                os.rename(temp_final_path, output_path)
+            else:
+                if status_callback:
+                    status_callback("Adding silent audio...")
+                logging.info("Adding silent audio with FFmpeg")
+                log_session("Adding silent audio with FFmpeg")
+                cmd = [
+                    'ffmpeg', '-i', temp_final_path, '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
+                    '-c:v', 'copy', '-c:a', 'aac', '-shortest', '-y', output_path
+                ]
+                subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+                logging.info(f"Silent audio added to {output_path}")
+                log_session(f"Silent audio added to {output_path}")
 
-        logging.info(f"Processing completed successfully for {output_path}")
-        log_session(f"Processing completed successfully for {output_path}")
-        return None if written_frames > 0 else "No frames written after processing"
+            os.remove(temp_final_path)
+            if progress_callback:
+                progress_callback(100, 0, 0, 0)  # Set to 100% after completion
+            logging.info(f"Processing completed successfully for {output_path}")
+            log_session(f"Processing completed successfully for {output_path}")
+            return None
 
     except Exception as e:
         logging.error(f"Unexpected error in video processing: {str(e)}", exc_info=True)
@@ -433,7 +396,7 @@ class VideoProcessorApp:
         self.preview_image = None
         self.blank_ctk_image = ctk.CTkImage(light_image=Image.new('RGB', (200, 150), (0, 0, 0)), 
                                           dark_image=Image.new('RGB', (200, 150), (0, 0, 0)), size=(200, 150))
-        self.root.after(50, self.process_queue)  # Increased polling frequency
+        self.root.after(50, self.process_queue)
         
         self.motion_threshold = 3000
         self.white_threshold = 200
@@ -884,13 +847,12 @@ class VideoProcessorApp:
         if msg_type == "task_start":
             task_name, progress = args
             self.current_task_label.configure(text=f"Current Task: {task_name}")
-            self.progress.set(0)  # Reset progress bar
+            self.progress.set(0)
             self.time_label.configure(text="Estimating time...")
             logging.info(f"Task started: {task_name}")
             log_session(f"UI Update: Task started: {task_name}")
         elif msg_type == "progress":
             progress_value, current, total, remaining = args
-            # Ensure progress_value is between 0 and 100, then normalize to 0-1 for the progress bar
             progress_value = min(max(progress_value, 0), 100)
             self.progress.set(progress_value / 100)
             remaining_min = remaining / 60 if remaining > 0 else 0
