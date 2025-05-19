@@ -26,7 +26,7 @@ except ImportError:
     logging.warning("speedtest module not found. Network stability checks will be limited.")
 
 # Version number
-VERSION = "7.0.7"  # Updated to fix upload errors, memory optimization, and threading
+VERSION = "7.0.8"  # Updated for debugging hang issue
 
 # Set up logging
 logging.basicConfig(filename='upload_log.txt', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -54,7 +54,7 @@ def is_white_or_black_frame(frame, white_threshold=200, black_threshold=50):
     return mean_brightness > white_threshold or mean_brightness < black_threshold
 
 def normalize_frame(frame, clip_limit=1.0, saturation_multiplier=1.1):
-    """Normalize frame brightness and enhance saturation with memory optimization."""
+    """Normalize frame brightness and enhance saturation."""
     try:
         frame = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2))
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
@@ -84,7 +84,7 @@ def validate_video_file(file_path):
         return False
 
 def check_network_stability():
-    """Enhanced network stability check with speed test or fallback."""
+    """Check network stability with speed test or fallback."""
     try:
         response = requests.get("https://www.google.com", timeout=5)
         if response.status_code != 200:
@@ -92,8 +92,7 @@ def check_network_stability():
             return False
         
         if speedtest is None:
-            logging.info("No speedtest module available. Relying on ping test only.")
-            messagebox.showwarning("Warning", "The 'speedtest' module is not installed. Network stability checks are limited. Install it with 'pip install speedtest-cli' for full functionality.")
+            logging.info("No speedtest module, using ping only")
             return True
         
         st = speedtest.Speedtest()
@@ -110,9 +109,12 @@ def check_network_stability():
 
 def process_video_multi_pass(input_path, output_path, desired_duration, motion_threshold=3000, sample_interval=5, 
                              white_threshold=200, black_threshold=50, clip_limit=1.0, saturation_multiplier=1.1, 
-                             output_format='mp4', progress_callback=None, cancel_event=None, music_path=None):
-    """Process video with improved motion detection and error handling."""
+                             output_format='mp4', progress_callback=None, cancel_event=None, music_path=None, status_callback=None):
+    """Process video with motion detection and error handling."""
     try:
+        logging.info(f"Starting process_video_multi_pass for {input_path}")
+        if status_callback:
+            status_callback("Opening video file...")
         cap = cv2.VideoCapture(input_path)
         if not cap.isOpened():
             logging.error(f"Failed to open {input_path}")
@@ -138,15 +140,20 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
         prev_frame = None
         start_time = time.time()
         
+        if status_callback:
+            status_callback("Starting motion detection...")
+        logging.info("Entering motion detection loop")
         with thread_lock:
             cap = cv2.VideoCapture(input_path)
             for frame_idx in range(0, total_frames, sample_interval):
                 if cancel_event and cancel_event.is_set():
                     cap.release()
+                    logging.info("Motion detection canceled by user")
                     return "Processing canceled by user"
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
                 ret, frame = cap.read()
                 if not ret:
+                    logging.error(f"Failed to read frame {frame_idx}")
                     break
                 if prev_frame is not None:
                     motion_score = compute_motion_score(prev_frame, frame, threshold=motion_threshold)
@@ -165,12 +172,18 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
                     remaining = (total_frames - frame_idx) / rate if rate > 0 else 0
                     progress_callback(frame_idx / total_frames * 33, frame_idx, total_frames, remaining)
             cap.release()
+        logging.info("Motion detection complete")
+        if status_callback:
+            status_callback("Motion detection complete")
         
         if not include_indices:
             logging.warning(f"No motion detected in {input_path}, using fallback")
             target_frames = int(desired_duration * fps)
             include_indices = [i for i in range(0, total_frames, max(1, total_frames // target_frames))]
         
+        if status_callback:
+            status_callback("Writing intermediate video...")
+        logging.info("Writing intermediate video")
         with thread_lock:
             cap = cv2.VideoCapture(input_path)
             out = cv2.VideoWriter(temp_path1, fourcc, fps, (frame_width, frame_height))
@@ -179,6 +192,7 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
                     cap.release()
                     out.release()
                     os.remove(temp_path1)
+                    logging.info("Intermediate video writing canceled")
                     return "Processing canceled by user"
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
                 ret, frame = cap.read()
@@ -188,8 +202,14 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
                     progress_callback(33 + (idx / len(include_indices) * 33), idx, len(include_indices), 0)
             cap.release()
             out.release()
+        logging.info("Intermediate video written")
+        if status_callback:
+            status_callback("Intermediate video written")
         
         temp_path2 = f"temp_filtered_{uuid.uuid4().hex}.{output_format}"
+        if status_callback:
+            status_callback("Filtering frames...")
+        logging.info("Filtering frames")
         with thread_lock:
             cap = cv2.VideoCapture(temp_path1)
             out = cv2.VideoWriter(temp_path2, fourcc, fps, (frame_width, frame_height))
@@ -200,6 +220,7 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
                     cap.release()
                     out.release()
                     os.remove(temp_path1)
+                    logging.info("Frame filtering canceled")
                     return "Processing canceled by user"
                 ret, frame = cap.read()
                 if not ret:
@@ -215,9 +236,15 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
             cap.release()
             out.release()
             os.remove(temp_path1)
+        logging.info("Frame filtering complete")
+        if status_callback:
+            status_callback("Frame filtering complete")
         
         target_frames = int(desired_duration * fps)
         temp_final_path = f"temp_final_{uuid.uuid4().hex}.{output_format}"
+        if status_callback:
+            status_callback("Writing final video...")
+        logging.info("Writing final video")
         with thread_lock:
             cap = cv2.VideoCapture(temp_path2)
             out = cv2.VideoWriter(temp_final_path, fourcc, fps, (frame_height, frame_width) if rotate else (frame_width, frame_height))
@@ -232,6 +259,7 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
                     cap.release()
                     out.release()
                     os.remove(temp_path2)
+                    logging.info("Final video writing canceled")
                     return "Processing canceled by user"
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
                 ret, frame = cap.read()
@@ -241,6 +269,7 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
                         cap.release()
                         out.release()
                         os.remove(temp_path2)
+                        logging.error("Memory error in final video writing")
                         return "Memory error during processing"
                     if rotate:
                         normalized_frame = cv2.rotate(normalized_frame, cv2.ROTATE_90_CLOCKWISE)
@@ -253,27 +282,45 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
             cap.release()
             out.release()
             os.remove(temp_path2)
+        logging.info("Final video written")
+        if status_callback:
+            status_callback("Final video written")
         
         if music_path and os.path.exists(music_path):
+            if status_callback:
+                status_callback("Adding music...")
+            logging.info("Adding music with FFmpeg")
             try:
                 cmd = ['ffmpeg', '-stream_loop', '-1', '-i', music_path, '-i', temp_final_path,
                        '-c:v', 'libx264', '-preset', 'medium', '-c:a', 'aac', '-shortest', '-y', output_path]
-                subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+                subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=600)
                 os.remove(temp_final_path)
                 logging.info(f"Music added to {output_path}")
+            except subprocess.TimeoutExpired:
+                logging.error("FFmpeg music addition timed out")
+                os.rename(temp_final_path, output_path)
+                return "FFmpeg timeout during music addition"
             except subprocess.CalledProcessError as e:
                 logging.error(f"Music addition failed: {e.stderr.decode()}")
                 os.rename(temp_final_path, output_path)
         else:
+            if status_callback:
+                status_callback("Re-encoding video...")
+            logging.info("Re-encoding video with FFmpeg")
             try:
                 cmd = ['ffmpeg', '-i', temp_final_path, '-c:v', 'libx264', '-preset', 'medium', '-an', '-y', output_path]
-                subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+                subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=600)
                 os.remove(temp_final_path)
                 logging.info(f"Re-encoded to {output_path}")
+            except subprocess.TimeoutExpired:
+                logging.error("FFmpeg re-encoding timed out")
+                os.rename(temp_final_path, output_path)
+                return "FFmpeg timeout during re-encoding"
             except subprocess.CalledProcessError as e:
-                logging.error(f"Re_encoding failed: {e.stderr.decode()}")
+                logging.error(f"Re-encoding failed: {e.stderr.decode()}")
                 os.rename(temp_final_path, output_path)
         
+        logging.info(f"Processing complete for {output_path}")
         return None if final_indices else "No frames written after trimming"
     except Exception as e:
         logging.error(f"Error in process_video_multi_pass: {str(e)}", exc_info=True)
@@ -283,7 +330,7 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
 
 class VideoProcessorApp:
     def __init__(self, root):
-        """Initialize GUI with music selection and video processing."""
+        """Initialize GUI with video processing."""
         self.root = root
         self.root.title(f"Bird Box Video Processor v{VERSION}")
         ctk.set_appearance_mode("dark")
@@ -665,14 +712,19 @@ class VideoProcessorApp:
     
     def start_processing(self):
         """Initiate video processing."""
+        logging.info("start_processing called")
         if not self.input_files:
+            logging.warning("No files selected")
             messagebox.showwarning("Warning", "No files selected.")
             return
         if not (self.generate_60s.get() or self.generate_12min.get() or self.generate_1h.get()):
+            logging.warning("No video generation options selected")
             messagebox.showwarning("Warning", "Select at least one video to generate.")
             return
+        logging.info("Clearing output frame")
         for widget in self.output_frame.winfo_children():
             widget.destroy()
+        logging.info("Disabling UI elements")
         self.switch_60s.configure(state="disabled")
         self.switch_12min.configure(state="disabled")
         self.switch_1h.configure(state="disabled")
@@ -681,58 +733,76 @@ class VideoProcessorApp:
         self.cancel_button.configure(state="normal")
         self.cancel_event.clear()
         self.start_time = time.time()
+        logging.info("Starting processing thread")
         threading.Thread(target=self.process_video_thread).start()
     
     def process_video_thread(self):
         """Process videos in a separate thread."""
-        selected_videos = []
-        if self.generate_60s.get():
-            selected_videos.append(("Generate 60s Video", 60))
-        if self.generate_12min.get():
-            selected_videos.append(("Generate 12min Video", 720))
-        if self.generate_1h.get():
-            selected_videos.append(("Generate 1h Video", 3600))
-        
-        output_format = self.output_format_var.get()
-        for input_file in self.input_files:
-            base, _ = os.path.splitext(input_file)
-            output_files = {}
+        try:
+            logging.info("process_video_thread started")
+            selected_videos = []
+            if self.generate_60s.get():
+                selected_videos.append(("Generate 60s Video", 60))
+            if self.generate_12min.get():
+                selected_videos.append(("Generate 12min Video", 720))
+            if self.generate_1h.get():
+                selected_videos.append(("Generate 1h Video", 3600))
             
-            for task_name, duration in selected_videos:
-                if self.cancel_event.is_set():
-                    self.queue.put(("canceled", "User Cancellation"))
-                    break
-                output_file = f"{base}_{task_name.split()[1]}.{output_format}"
-                self.queue.put(("task_start", f"{task_name} - {os.path.basename(input_file)}", 0))
+            output_format = self.output_format_var.get()
+            for input_file in self.input_files:
+                base, _ = os.path.splitext(input_file)
+                output_files = {}
                 
-                def progress_callback(progress, current, total, remaining):
-                    with thread_lock:
-                        self.queue.put(("progress", progress, (current / total) * 100, remaining))
-                
-                error = process_video_multi_pass(
-                    input_file, output_file, duration,
-                    motion_threshold=self.motion_threshold,
-                    sample_interval=5,
-                    white_threshold=self.white_threshold,
-                    black_threshold=self.black_threshold,
-                    clip_limit=self.clip_limit,
-                    saturation_multiplier=self.saturation_multiplier,
-                    output_format=output_format,
-                    progress_callback=progress_callback,
-                    cancel_event=self.cancel_event,
-                    music_path=self.music_path
-                )
-                
-                if error:
-                    self.queue.put(("canceled", error))
-                    break
-                else:
-                    output_files[task_name] = output_file
-                    self.queue.put(("complete", output_files, time.time() - self.start_time))
+                for task_name, duration in selected_videos:
+                    if self.cancel_event.is_set():
+                        self.queue.put(("canceled", "User Cancellation"))
+                        logging.info("Processing canceled by user")
+                        break
+                    output_file = f"{base}_{task_name.split()[1]}.{output_format}"
+                    logging.info(f"Starting task: {task_name} for {input_file}")
+                    self.queue.put(("task_start", f"{task_name} - {os.path.basename(input_file)}", 0))
+                    
+                    def progress_callback(progress, current, total, remaining):
+                        logging.info(f"Progress: {progress:.2f}%, {current}/{total}, remaining: {remaining:.2f}s")
+                        with thread_lock:
+                            self.queue.put(("progress", progress, (current / total) * 100, remaining))
+                    
+                    def status_callback(status):
+                        logging.info(f"Status update: {status}")
+                        self.queue.put(("status", status))
+                    
+                    error = process_video_multi_pass(
+                        input_file, output_file, duration,
+                        motion_threshold=self.motion_threshold,
+                        sample_interval=5,
+                        white_threshold=self.white_threshold,
+                        black_threshold=self.black_threshold,
+                        clip_limit=self.clip_limit,
+                        saturation_multiplier=self.saturation_multiplier,
+                        output_format=output_format,
+                        progress_callback=progress_callback,
+                        cancel_event=self.cancel_event,
+                        music_path=self.music_path,
+                        status_callback=status_callback
+                    )
+                    
+                    if error:
+                        self.queue.put(("canceled", error))
+                        logging.error(f"Task failed: {error}")
+                        break
+                    else:
+                        output_files[task_name] = output_file
+                        logging.info(f"Task completed: {task_name}")
+                self.queue.put(("complete", output_files, time.time() - self.start_time))
+            logging.info("process_video_thread finished")
+        except Exception as e:
+            logging.error(f"Error in process_video_thread: {str(e)}", exc_info=True)
+            self.queue.put(("canceled", str(e)))
     
     def cancel_processing(self):
         """Cancel ongoing processing."""
         self.cancel_event.set()
+        logging.info("Cancel requested")
     
     def process_queue(self):
         """Process queue messages for UI updates."""
@@ -752,11 +822,15 @@ class VideoProcessorApp:
             self.current_task_label.configure(text=f"Current Task: {task_name}")
             self.progress.set(progress / 100)
             self.time_label.configure(text="Estimating time...")
+            logging.info(f"Task started: {task_name}")
         elif msg_type == "progress":
             progress_value, percentage, remaining = args
             self.progress.set(progress_value / 100)
             remaining_min = remaining / 60 if remaining > 0 else 0
             self.time_label.configure(text=f"Est. Time Remaining: {remaining_min:.2f} min ({percentage:.2f}%)")
+        elif msg_type == "status":
+            status_text = args[0]
+            self.current_task_label.configure(text=status_text)
         elif msg_type == "complete":
             output_files, elapsed = args
             minutes = int(elapsed // 60)
@@ -775,6 +849,7 @@ class VideoProcessorApp:
             self.current_task_label.configure(text="Current Task: N/A")
             self.time_label.configure(text=f"Process Complete in {time_str}")
             self.reset_ui()
+            logging.info(f"Processing completed in {time_str}")
         elif msg_type == "canceled":
             reason = args[0]
             elapsed = time.time() - self.start_time if self.start_time else 0
@@ -788,6 +863,7 @@ class VideoProcessorApp:
             self.current_task_label.configure(text="Current Task: N/A")
             self.time_label.configure(text=f"Process Canceled in {time_str}")
             self.reset_ui()
+            logging.info(f"Processing canceled: {reason}")
     
     def reset_ui(self):
         """Reset UI controls to initial state."""
@@ -799,7 +875,7 @@ class VideoProcessorApp:
         self.cancel_button.configure(state="disabled")
     
     def get_youtube_client(self):
-        """Get authenticated YouTube API client without http conflict."""
+        """Get authenticated YouTube API client."""
         if not hasattr(self, 'youtube_client'):
             credentials = None
             if os.path.exists('token.pickle'):
@@ -819,7 +895,7 @@ class VideoProcessorApp:
                         credentials = None
                 if not credentials:
                     if not os.path.exists('client_secrets.json'):
-                        messagebox.showerror("Error", "client_secrets.json not found. Please set up YouTube API credentials.")
+                        messagebox.showerror("Error", "client_secrets.json not found.")
                         return None
                     try:
                         flow = InstalledAppFlow.from_client_secrets_file(
@@ -829,7 +905,7 @@ class VideoProcessorApp:
                         credentials = flow.run_local_server(port=0)
                     except Exception as e:
                         logging.error(f"Failed to authenticate: {str(e)}")
-                        messagebox.showerror("Error", "Authentication failed. Check client_secrets.json.")
+                        messagebox.showerror("Error", "Authentication failed.")
                         return None
                 with open('token.pickle', 'wb') as token:
                     pickle.dump(credentials, token)
@@ -848,7 +924,7 @@ class VideoProcessorApp:
             button.configure(state="normal", text="Upload to YouTube")
             return
         if not check_network_stability():
-            messagebox.showerror("Error", "Network unstable. Check connection.")
+            messagebox.showerror("Error", "Network unstable.")
             button.configure(state="normal", text="Upload to YouTube")
             return
         button.configure(state="disabled", text="Uploading...")
@@ -856,9 +932,8 @@ class VideoProcessorApp:
         thread.start()
     
     def upload_to_youtube(self, file_path, task_name, button):
-        """Upload video to YouTube with enhanced retry and error handling."""
+        """Upload video to YouTube with retry handling."""
         max_retries = 10
-        retry_delay = 20
         for attempt in range(max_retries):
             try:
                 youtube = self.get_youtube_client()
@@ -882,12 +957,6 @@ class VideoProcessorApp:
                 logging.info(f"Upload successful: {file_path}")
                 self.root.after(0, lambda: messagebox.showinfo("Success", f"Video uploaded: https://youtu.be/{response['id']}"))
                 break
-            except HttpError as e:
-                logging.warning(f"Upload attempt {attempt + 1} failed: {e.content.decode()}")
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay * (attempt + 1))
-                    continue
-                self.root.after(0, lambda: messagebox.showerror("Error", f"Upload failed: {e.content.decode()}"))
             except Exception as e:
                 logging.error(f"Upload error: {str(e)}", exc_info=True)
                 self.root.after(0, lambda: messagebox.showerror("Error", f"Upload failed: {str(e)}"))
