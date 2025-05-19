@@ -23,7 +23,7 @@ import httplib2
 import requests
 
 # Version number
-VERSION = "7.0.5"  # Updated to fix UnboundLocalError in handle_message
+VERSION = "7.0.6"  # Updated to fix UnboundLocalError and NameError
 
 # Set up logging
 logging.basicConfig(filename='upload_log.txt', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -759,7 +759,6 @@ class VideoProcessorApp:
                 file_frame.pack(fill='x', pady=2)
                 label = ctk.CTkLabel(file_frame, text=f"{task}: {file}")
                 label.pack(side=tk.LEFT, padx=5)
-                # Fix: Create the button and then assign the command separately to avoid UnboundLocalError
                 upload_button = ctk.CTkButton(file_frame, text="Upload to YouTube")
                 upload_button.configure(command=lambda f=file, t=task, b=upload_button: self.start_upload(f, t, b))
                 upload_button.pack(side=tk.RIGHT, padx=5)
@@ -891,10 +890,10 @@ class VideoProcessorApp:
                     time.sleep(retry_delay * (attempt + 1))
                     continue
                 logging.error("Upload failed after %d retries: %s", max_retries, error_response)
-                self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to upload video: {error_response}"))
+                self.root.after(0, lambda e=e: messagebox.showerror("Error", f"Failed to upload video: {error_response}"))
             except json.JSONDecodeError as e:
                 logging.error("JSON parsing error during upload: %s", str(e))
-                self.root.after(0, lambda: messagebox.showerror("Error", "Invalid response from YouTube API. Please try again later."))
+                self.root.after(0, lambda e=e: messagebox.showerror("Error", "Invalid response from YouTube API: {str(e)}"))
                 break
             except (socket.timeout, requests.exceptions.RequestException) as e:
                 logging.warning("Upload attempt %d failed: Network Error - %s", attempt + 1, str(e))
@@ -902,10 +901,10 @@ class VideoProcessorApp:
                     time.sleep(retry_delay * (attempt + 1))
                     continue
                 logging.error("Upload failed after %d retries: %s", max_retries, str(e))
-                self.root.after(0, lambda: messagebox.showerror("Error", f"Network error during upload: {str(e)}"))
+                self.root.after(0, lambda e=e: messagebox.showerror("Error", f"Network error during upload: {str(e)}"))
             except Exception as e:
                 logging.error("Unexpected error during upload: %s", str(e), exc_info=True)
-                self.root.after(0, lambda: messagebox.showerror("Error", f"Unexpected error during upload: {str(e)}"))
+                self.root.after(0, lambda e=e: messagebox.showerror("Error", f"Unexpected error during upload: {str(e)}"))
                 break
             finally:
                 self.root.after(0, lambda b=button: b.configure(state="normal", text="Upload to YouTube"))
