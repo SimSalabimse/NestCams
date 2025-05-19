@@ -26,7 +26,7 @@ except ImportError:
     logging.warning("speedtest module not found. Network stability checks will be limited.")
 
 # Version number
-VERSION = "7.0.8"  # Updated for debugging hang issue
+VERSION = "7.0.9"  # Updated to fix processing hang issue
 
 # Set up logging
 logging.basicConfig(filename='upload_log.txt', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -112,180 +112,153 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
                              output_format='mp4', progress_callback=None, cancel_event=None, music_path=None, status_callback=None):
     """Process video with motion detection and error handling."""
     try:
-        logging.info(f"Starting process_video_multi_pass for {input_path}")
+        logging.info(f"Starting video processing for {input_path}")
         if status_callback:
             status_callback("Opening video file...")
         cap = cv2.VideoCapture(input_path)
         if not cap.isOpened():
-            logging.error(f"Failed to open {input_path}")
+            logging.error(f"Cannot open video file: {input_path}")
             return "Failed to open video file"
-        
+
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        cap.release()
-        
         if total_frames <= 0 or fps <= 0:
-            logging.error(f"Invalid properties for {input_path}")
+            cap.release()
+            logging.error(f"Invalid video properties: total_frames={total_frames}, fps={fps}")
             return "Invalid video properties"
-        
+        logging.info(f"Video properties: {total_frames} frames, {fps} fps, {frame_width}x{frame_height}")
+        cap.release()
+
         rotate = desired_duration == 60
         format_codecs = {'mp4': 'mp4v', 'avi': 'XVID', 'mkv': 'X264'}
         fourcc = cv2.VideoWriter_fourcc(*format_codecs.get(output_format, 'mp4v'))
-        
-        temp_path1 = f"temp_intermediate_{uuid.uuid4().hex}.{output_format}"
-        in_motion = False
-        include_indices = []
-        prev_frame = None
         start_time = time.time()
-        
+
+        # Pass 1: Motion Detection
         if status_callback:
-            status_callback("Starting motion detection...")
-        logging.info("Entering motion detection loop")
-        with thread_lock:
-            cap = cv2.VideoCapture(input_path)
-            for frame_idx in range(0, total_frames, sample_interval):
-                if cancel_event and cancel_event.is_set():
-                    cap.release()
-                    logging.info("Motion detection canceled by user")
-                    return "Processing canceled by user"
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                ret, frame = cap.read()
-                if not ret:
-                    logging.error(f"Failed to read frame {frame_idx}")
-                    break
-                if prev_frame is not None:
-                    motion_score = compute_motion_score(prev_frame, frame, threshold=motion_threshold)
-                    if motion_score > motion_threshold:
-                        in_motion = True
-                        include_indices.append(frame_idx)
-                    elif motion_score <= motion_threshold and in_motion:
-                        in_motion = False
-                    prev_frame = frame.copy()
-                else:
-                    prev_frame = frame.copy()
-                
-                if progress_callback and frame_idx % 100 == 0:
-                    elapsed = time.time() - start_time
-                    rate = frame_idx / elapsed if elapsed > 0 else 0
-                    remaining = (total_frames - frame_idx) / rate if rate > 0 else 0
-                    progress_callback(frame_idx / total_frames * 33, frame_idx, total_frames, remaining)
-            cap.release()
-        logging.info("Motion detection complete")
-        if status_callback:
-            status_callback("Motion detection complete")
-        
-        if not include_indices:
-            logging.warning(f"No motion detected in {input_path}, using fallback")
-            target_frames = int(desired_duration * fps)
-            include_indices = [i for i in range(0, total_frames, max(1, total_frames // target_frames))]
-        
-        if status_callback:
-            status_callback("Writing intermediate video...")
-        logging.info("Writing intermediate video")
-        with thread_lock:
-            cap = cv2.VideoCapture(input_path)
-            out = cv2.VideoWriter(temp_path1, fourcc, fps, (frame_width, frame_height))
-            for idx, frame_idx in enumerate(include_indices):
-                if cancel_event and cancel_event.is_set():
-                    cap.release()
-                    out.release()
-                    os.remove(temp_path1)
-                    logging.info("Intermediate video writing canceled")
-                    return "Processing canceled by user"
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                ret, frame = cap.read()
-                if ret:
+            status_callback("Analyzing motion...")
+        logging.info("Starting motion detection pass")
+        temp_path1 = f"temp_motion_{uuid.uuid4().hex}.{output_format}"
+        cap = cv2.VideoCapture(input_path)
+        out = cv2.VideoWriter(temp_path1, fourcc, fps, (frame_width, frame_height))
+        prev_frame = None
+        frame_idx = 0
+        while True:
+            if cancel_event and cancel_event.is_set():
+                cap.release()
+                out.release()
+                os.remove(temp_path1)
+                logging.info("Motion detection canceled")
+                return "Processing canceled by user"
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if frame_idx % sample_interval == 0 and prev_frame is not None:
+                motion_score = compute_motion_score(prev_frame, frame)
+                if motion_score > motion_threshold:
                     out.write(frame)
-                if progress_callback and idx % 50 == 0:
-                    progress_callback(33 + (idx / len(include_indices) * 33), idx, len(include_indices), 0)
-            cap.release()
-            out.release()
-        logging.info("Intermediate video written")
+            prev_frame = frame
+            frame_idx += 1
+            if progress_callback and frame_idx % 100 == 0:
+                elapsed = time.time() - start_time
+                rate = frame_idx / elapsed if elapsed > 0 else 0
+                remaining = (total_frames - frame_idx) / rate if rate > 0 else 0
+                progress_callback(frame_idx / total_frames * 33, frame_idx, total_frames, remaining)
+        cap.release()
+        out.release()
+        logging.info("Motion detection pass completed")
         if status_callback:
-            status_callback("Intermediate video written")
-        
-        temp_path2 = f"temp_filtered_{uuid.uuid4().hex}.{output_format}"
+            status_callback("Motion detection completed")
+
+        # Pass 2: Filter White/Black Frames
         if status_callback:
             status_callback("Filtering frames...")
-        logging.info("Filtering frames")
-        with thread_lock:
-            cap = cv2.VideoCapture(temp_path1)
-            out = cv2.VideoWriter(temp_path2, fourcc, fps, (frame_width, frame_height))
-            filtered_indices = []
-            total_intermediate_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            for frame_idx in range(total_intermediate_frames):
-                if cancel_event and cancel_event.is_set():
-                    cap.release()
-                    out.release()
-                    os.remove(temp_path1)
-                    logging.info("Frame filtering canceled")
-                    return "Processing canceled by user"
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                if not is_white_or_black_frame(frame, white_threshold, black_threshold):
-                    out.write(frame)
-                    filtered_indices.append(frame_idx)
-                if progress_callback and frame_idx % 50 == 0:
-                    elapsed = time.time() - start_time
-                    rate = frame_idx / elapsed if elapsed > 0 else 0
-                    remaining = (total_intermediate_frames - frame_idx) / rate if rate > 0 else 0
-                    progress_callback(33 + (frame_idx / total_intermediate_frames * 33), frame_idx, total_intermediate_frames, remaining)
-            cap.release()
-            out.release()
-            os.remove(temp_path1)
-        logging.info("Frame filtering complete")
+        logging.info("Starting frame filtering pass")
+        temp_path2 = f"temp_filtered_{uuid.uuid4().hex}.{output_format}"
+        cap = cv2.VideoCapture(temp_path1)
+        out = cv2.VideoWriter(temp_path2, fourcc, fps, (frame_width, frame_height))
+        filtered_frames = 0
+        frame_idx = 0
+        total_temp_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        while True:
+            if cancel_event and cancel_event.is_set():
+                cap.release()
+                out.release()
+                os.remove(temp_path1)
+                os.remove(temp_path2)
+                logging.info("Frame filtering canceled")
+                return "Processing canceled by user"
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if not is_white_or_black_frame(frame, white_threshold, black_threshold):
+                out.write(frame)
+                filtered_frames += 1
+            frame_idx += 1
+            if progress_callback and frame_idx % 50 == 0:
+                elapsed = time.time() - start_time
+                rate = frame_idx / elapsed if elapsed > 0 else 0
+                remaining = (total_temp_frames - frame_idx) / rate if rate > 0 else 0
+                progress_callback(33 + (frame_idx / total_temp_frames * 33), frame_idx, total_temp_frames, remaining)
+        cap.release()
+        out.release()
+        os.remove(temp_path1)
+        logging.info(f"Frame filtering pass completed, {filtered_frames} frames kept")
         if status_callback:
-            status_callback("Frame filtering complete")
-        
-        target_frames = int(desired_duration * fps)
+            status_callback("Frame filtering completed")
+
+        # Pass 3: Final Video Assembly
+        if status_callback:
+            status_callback("Assembling final video...")
+        logging.info("Starting final video assembly")
         temp_final_path = f"temp_final_{uuid.uuid4().hex}.{output_format}"
-        if status_callback:
-            status_callback("Writing final video...")
-        logging.info("Writing final video")
-        with thread_lock:
-            cap = cv2.VideoCapture(temp_path2)
-            out = cv2.VideoWriter(temp_final_path, fourcc, fps, (frame_height, frame_width) if rotate else (frame_width, frame_height))
-            if len(filtered_indices) > target_frames:
-                step = len(filtered_indices) / target_frames
-                final_indices = [filtered_indices[int(i * step)] for i in range(target_frames)]
-            else:
-                final_indices = filtered_indices
-            
-            for idx, frame_idx in enumerate(final_indices):
-                if cancel_event and cancel_event.is_set():
+        cap = cv2.VideoCapture(temp_path2)
+        out = cv2.VideoWriter(temp_final_path, fourcc, fps, (frame_height, frame_width) if rotate else (frame_width, frame_height))
+        target_frames = int(desired_duration * fps)
+        total_filtered_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        step = max(1, total_filtered_frames // target_frames) if total_filtered_frames > target_frames else 1
+        frame_idx = 0
+        written_frames = 0
+        while True:
+            if cancel_event and cancel_event.is_set():
+                cap.release()
+                out.release()
+                os.remove(temp_path2)
+                os.remove(temp_final_path)
+                logging.info("Final assembly canceled")
+                return "Processing canceled by user"
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if frame_idx % step == 0 and written_frames < target_frames:
+                normalized_frame = normalize_frame(frame, clip_limit, saturation_multiplier)
+                if normalized_frame is None:
                     cap.release()
                     out.release()
                     os.remove(temp_path2)
-                    logging.info("Final video writing canceled")
-                    return "Processing canceled by user"
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                ret, frame = cap.read()
-                if ret:
-                    normalized_frame = normalize_frame(frame, clip_limit, saturation_multiplier)
-                    if normalized_frame is None:
-                        cap.release()
-                        out.release()
-                        os.remove(temp_path2)
-                        logging.error("Memory error in final video writing")
-                        return "Memory error during processing"
-                    if rotate:
-                        normalized_frame = cv2.rotate(normalized_frame, cv2.ROTATE_90_CLOCKWISE)
-                    out.write(normalized_frame)
-                if progress_callback and idx % 10 == 0:
-                    elapsed = time.time() - start_time
-                    rate = idx / elapsed if elapsed > 0 else 0
-                    remaining = (len(final_indices) - idx) / rate if rate > 0 else 0
-                    progress_callback(66 + (idx / len(final_indices) * 34), idx, len(final_indices), remaining)
-            cap.release()
-            out.release()
-            os.remove(temp_path2)
-        logging.info("Final video written")
+                    os.remove(temp_final_path)
+                    logging.error("Memory error during normalization")
+                    return "Memory error during processing"
+                if rotate:
+                    normalized_frame = cv2.rotate(normalized_frame, cv2.ROTATE_90_CLOCKWISE)
+                out.write(normalized_frame)
+                written_frames += 1
+            frame_idx += 1
+            if progress_callback and frame_idx % 10 == 0:
+                elapsed = time.time() - start_time
+                rate = frame_idx / elapsed if elapsed > 0 else 0
+                remaining = (total_filtered_frames - frame_idx) / rate if rate > 0 else 0
+                progress_callback(66 + (frame_idx / total_filtered_frames * 34), frame_idx, total_filtered_frames, remaining)
+        cap.release()
+        out.release()
+        os.remove(temp_path2)
+        logging.info(f"Final video assembled with {written_frames} frames")
         if status_callback:
-            status_callback("Final video written")
-        
+            status_callback("Final video assembled")
+
+        # Finalize with FFmpeg
         if music_path and os.path.exists(music_path):
             if status_callback:
                 status_callback("Adding music...")
@@ -319,12 +292,13 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
             except subprocess.CalledProcessError as e:
                 logging.error(f"Re-encoding failed: {e.stderr.decode()}")
                 os.rename(temp_final_path, output_path)
-        
-        logging.info(f"Processing complete for {output_path}")
-        return None if final_indices else "No frames written after trimming"
+
+        logging.info(f"Processing completed successfully for {output_path}")
+        return None if written_frames > 0 else "No frames written after processing"
+
     except Exception as e:
-        logging.error(f"Error in process_video_multi_pass: {str(e)}", exc_info=True)
-        return str(e)
+        logging.error(f"Unexpected error in video processing: {str(e)}", exc_info=True)
+        return f"Error: {str(e)}"
 
 ### Main Application Class
 
