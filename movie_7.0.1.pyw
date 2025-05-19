@@ -93,6 +93,7 @@ def check_network_stability():
         
         if speedtest is None:
             logging.info("No speedtest module available. Relying on ping test only.")
+            messagebox.showwarning("Warning", "The 'speedtest' module is not installed. Network stability checks are limited. Install it with 'pip install speedtest-cli' for full functionality.")
             return True
         
         st = speedtest.Speedtest()
