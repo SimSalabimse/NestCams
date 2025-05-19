@@ -17,16 +17,18 @@ from google.auth.transport.requests import Request
 import pickle
 import subprocess
 import logging
-import socket
+import speedtest
 from googleapiclient.errors import HttpError
-import httplib2
 import requests
 
 # Version number
-VERSION = "7.0.6"  # Updated to fix UnboundLocalError and NameError
+VERSION = "7.0.7"  # Updated to fix upload errors, memory optimization, and threading
 
 # Set up logging
 logging.basicConfig(filename='upload_log.txt', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Thread lock for shared resources
+thread_lock = threading.Lock()
 
 ### Helper Functions
 
@@ -37,7 +39,9 @@ def compute_motion_score(prev_frame, current_frame, threshold=30):
     prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
     curr_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
     diff = cv2.absdiff(prev_gray, curr_gray)
-    return np.sum(diff > threshold, dtype=np.uint32)
+    score = np.sum(diff > threshold, dtype=np.uint32)
+    logging.debug(f"Motion score: {score}")
+    return score
 
 def is_white_or_black_frame(frame, white_threshold=200, black_threshold=50):
     """Check if frame is predominantly white or black."""
@@ -46,8 +50,10 @@ def is_white_or_black_frame(frame, white_threshold=200, black_threshold=50):
     return mean_brightness > white_threshold or mean_brightness < black_threshold
 
 def normalize_frame(frame, clip_limit=1.0, saturation_multiplier=1.1):
-    """Normalize frame brightness and enhance saturation."""
+    """Normalize frame brightness and enhance saturation with memory optimization."""
     try:
+        # Resize frame to reduce memory usage
+        frame = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2))
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
         clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
@@ -56,210 +62,213 @@ def normalize_frame(frame, clip_limit=1.0, saturation_multiplier=1.1):
         frame_clahe = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
         hsv = cv2.cvtColor(frame_clahe, cv2.COLOR_BGR2HSV)
         h, s, v = cv2.split(hsv)
-        s = (s.astype('float32') * saturation_multiplier).clip(0, 255).astype('uint8')
+        s = cv2.multiply(s, saturation_multiplier, dtype=cv2.CV_8U)  # Use uint8 to save memory
         hsv_enhanced = cv2.merge((h, s, v))
         return cv2.cvtColor(hsv_enhanced, cv2.COLOR_HSV2BGR)
     except MemoryError:
+        logging.error("MemoryError in normalize_frame")
         return None
 
 def validate_video_file(file_path):
     """Validate video file using FFmpeg."""
     try:
         cmd = ['ffmpeg', '-i', file_path, '-f', 'null', '-']
-        result = subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, check=True)
-        logging.info("Video file validated successfully: %s", file_path)
+        subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, check=True)
+        logging.info(f"Validated video file: {file_path}")
         return True
     except subprocess.CalledProcessError as e:
-        logging.error("Video file validation failed: %s", e.stderr.decode())
+        logging.error(f"Validation failed for {file_path}: {e.stderr.decode()}")
         return False
 
 def check_network_stability():
-    """Check network stability by pinging Google."""
+    """Enhanced network stability check with speed test."""
     try:
         response = requests.get("https://www.google.com", timeout=5)
-        if response.status_code == 200:
-            logging.info("Network is stable")
-            return True
-        else:
-            logging.warning("Network check failed: Status code %d", response.status_code)
+        if response.status_code != 200:
+            logging.warning(f"Network ping failed: Status {response.status_code}")
             return False
-    except requests.exceptions.RequestException as e:
-        logging.warning("Network check failed: %s", str(e))
+        st = speedtest.Speedtest()
+        st.get_best_server()
+        upload_speed = st.upload() / 1_000_000  # Mbps
+        if upload_speed < 1.0:
+            logging.warning(f"Upload speed too low: {upload_speed:.2f} Mbps")
+            return False
+        logging.info(f"Network stable: Upload speed {upload_speed:.2f} Mbps")
+        return True
+    except Exception as e:
+        logging.warning(f"Network check failed: {str(e)}")
         return False
 
 def process_video_multi_pass(input_path, output_path, desired_duration, motion_threshold=3000, sample_interval=5, 
                              white_threshold=200, black_threshold=50, clip_limit=1.0, saturation_multiplier=1.1, 
                              output_format='mp4', progress_callback=None, cancel_event=None, music_path=None):
-    """Process video in multiple passes with H.264 encoding and optional music integration."""
-    cap = cv2.VideoCapture(input_path)
-    if not cap.isOpened():
-        logging.error("Could not open video file: %s", input_path)
-        return "Failed to open video file"
-    
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    cap.release()
-    
-    if total_frames <= 0 or fps <= 0:
-        return "Invalid video properties"
-    
-    rotate = desired_duration == 60
-    format_codecs = {'mp4': 'mp4v', 'avi': 'XVID', 'mkv': 'X264'}
-    fourcc = cv2.VideoWriter_fourcc(*format_codecs.get(output_format, 'mp4v'))
-    
-    temp_path1 = f"temp_intermediate_{uuid.uuid4().hex}.{output_format}"
-    in_motion = False
-    include_indices = []
-    prev_frame = None
-    start_time = time.time()
-    
-    cap = cv2.VideoCapture(input_path)
-    for frame_idx in range(total_frames):
-        if cancel_event and cancel_event.is_set():
-            cap.release()
-            return "Processing canceled by user"
-        ret, frame = cap.read()
-        if not ret:
-            break
-        if frame_idx % sample_interval == 0 and prev_frame is not None:
-            motion_score = compute_motion_score(prev_frame, frame, threshold=motion_threshold)
-            if motion_score > motion_threshold:
-                in_motion = True
-                include_indices.append(frame_idx)
-            elif motion_score <= motion_threshold and in_motion:
-                in_motion = False
-            prev_frame = frame
-        elif in_motion:
-            include_indices.append(frame_idx)
+    """Process video with improved motion detection and error handling."""
+    try:
+        cap = cv2.VideoCapture(input_path)
+        if not cap.isOpened():
+            logging.error(f"Failed to open {input_path}")
+            return "Failed to open video file"
         
-        if progress_callback and frame_idx % 100 == 0:
-            elapsed = time.time() - start_time
-            rate = frame_idx / elapsed if elapsed > 0 else 0
-            remaining = (total_frames - frame_idx) / rate if rate > 0 else 0
-            progress_callback(frame_idx / total_frames * 33, frame_idx, total_frames, remaining)
-    
-    cap.release()
-    
-    if not include_indices:
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
+        
+        if total_frames <= 0 or fps <= 0:
+            logging.error(f"Invalid properties for {input_path}")
+            return "Invalid video properties"
+        
+        rotate = desired_duration == 60
+        format_codecs = {'mp4': 'mp4v', 'avi': 'XVID', 'mkv': 'X264'}
+        fourcc = cv2.VideoWriter_fourcc(*format_codecs.get(output_format, 'mp4v'))
+        
+        temp_path1 = f"temp_intermediate_{uuid.uuid4().hex}.{output_format}"
+        in_motion = False
+        include_indices = []
+        prev_frame = None
+        start_time = time.time()
+        
+        with thread_lock:
+            cap = cv2.VideoCapture(input_path)
+            for frame_idx in range(0, total_frames, sample_interval):
+                if cancel_event and cancel_event.is_set():
+                    cap.release()
+                    return "Processing canceled by user"
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if prev_frame is not None:
+                    motion_score = compute_motion_score(prev_frame, frame, threshold=motion_threshold)
+                    if motion_score > motion_threshold:
+                        in_motion = True
+                        include_indices.append(frame_idx)
+                    elif motion_score <= motion_threshold and in_motion:
+                        in_motion = False
+                    prev_frame = frame.copy()
+                else:
+                    prev_frame = frame.copy()
+                
+                if progress_callback and frame_idx % 100 == 0:
+                    elapsed = time.time() - start_time
+                    rate = frame_idx / elapsed if elapsed > 0 else 0
+                    remaining = (total_frames - frame_idx) / rate if rate > 0 else 0
+                    progress_callback(frame_idx / total_frames * 33, frame_idx, total_frames, remaining)
+            cap.release()
+        
+        if not include_indices:
+            logging.warning(f"No motion detected in {input_path}, using fallback")
+            target_frames = int(desired_duration * fps)
+            include_indices = [i for i in range(0, total_frames, max(1, total_frames // target_frames))]
+        
+        with thread_lock:
+            cap = cv2.VideoCapture(input_path)
+            out = cv2.VideoWriter(temp_path1, fourcc, fps, (frame_width, frame_height))
+            for idx, frame_idx in enumerate(include_indices):
+                if cancel_event and cancel_event.is_set():
+                    cap.release()
+                    out.release()
+                    os.remove(temp_path1)
+                    return "Processing canceled by user"
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+                if ret:
+                    out.write(frame)
+                if progress_callback and idx % 50 == 0:
+                    progress_callback(33 + (idx / len(include_indices) * 33), idx, len(include_indices), 0)
+            cap.release()
+            out.release()
+        
+        temp_path2 = f"temp_filtered_{uuid.uuid4().hex}.{output_format}"
+        with thread_lock:
+            cap = cv2.VideoCapture(temp_path1)
+            out = cv2.VideoWriter(temp_path2, fourcc, fps, (frame_width, frame_height))
+            filtered_indices = []
+            total_intermediate_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            for frame_idx in range(total_intermediate_frames):
+                if cancel_event and cancel_event.is_set():
+                    cap.release()
+                    out.release()
+                    os.remove(temp_path1)
+                    return "Processing canceled by user"
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if not is_white_or_black_frame(frame, white_threshold, black_threshold):
+                    out.write(frame)
+                    filtered_indices.append(frame_idx)
+                if progress_callback and frame_idx % 50 == 0:
+                    elapsed = time.time() - start_time
+                    rate = frame_idx / elapsed if elapsed > 0 else 0
+                    remaining = (total_intermediate_frames - frame_idx) / rate if rate > 0 else 0
+                    progress_callback(33 + (frame_idx / total_intermediate_frames * 33), frame_idx, total_intermediate_frames, remaining)
+            cap.release()
+            out.release()
+            os.remove(temp_path1)
+        
         target_frames = int(desired_duration * fps)
-        include_indices = [i for i in range(0, total_frames, max(1, total_frames // target_frames))]
-    
-    cap = cv2.VideoCapture(input_path)
-    out = cv2.VideoWriter(temp_path1, fourcc, fps, (frame_width, frame_height))
-    for idx, frame_idx in enumerate(include_indices):
-        if cancel_event and cancel_event.is_set():
-            cap.release()
-            out.release()
-            os.remove(temp_path1)
-            return "Processing canceled by user"
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-        ret, frame = cap.read()
-        if ret:
-            out.write(frame)
-        if progress_callback and idx % 50 == 0:
-            progress_callback(33 + (idx / len(include_indices) * 33), idx, len(include_indices), 0)
-    cap.release()
-    out.release()
-    
-    temp_path2 = f"temp_filtered_{uuid.uuid4().hex}.{output_format}"
-    cap = cv2.VideoCapture(temp_path1)
-    out = cv2.VideoWriter(temp_path2, fourcc, fps, (frame_width, frame_height))
-    filtered_indices = []
-    
-    total_intermediate_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    for frame_idx in range(total_intermediate_frames):
-        if cancel_event and cancel_event.is_set():
-            cap.release()
-            out.release()
-            os.remove(temp_path1)
-            return "Processing canceled by user"
-        ret, frame = cap.read()
-        if not ret:
-            break
-        if not is_white_or_black_frame(frame, white_threshold, black_threshold):
-            out.write(frame)
-            filtered_indices.append(frame_idx)
-        
-        if progress_callback and frame_idx % 50 == 0:
-            elapsed = time.time() - start_time
-            rate = frame_idx / elapsed if elapsed > 0 else 0
-            remaining = (total_intermediate_frames - frame_idx) / rate if rate > 0 else 0
-            progress_callback(33 + (frame_idx / total_intermediate_frames * 33), frame_idx, total_intermediate_frames, remaining)
-    
-    cap.release()
-    out.release()
-    os.remove(temp_path1)
-    
-    target_frames = int(desired_duration * fps)
-    cap = cv2.VideoCapture(temp_path2)
-    temp_final_path = f"temp_final_{uuid.uuid4().hex}.{output_format}"
-    if rotate:
-        out = cv2.VideoWriter(temp_final_path, fourcc, fps, (frame_height, frame_width))
-    else:
-        out = cv2.VideoWriter(temp_final_path, fourcc, fps, (frame_width, frame_height))
-    
-    if len(filtered_indices) > target_frames:
-        step = len(filtered_indices) / target_frames
-        final_indices = [filtered_indices[int(i * step)] for i in range(target_frames)]
-    else:
-        final_indices = filtered_indices
-    
-    for idx, frame_idx in enumerate(final_indices):
-        if cancel_event and cancel_event.is_set():
+        temp_final_path = f"temp_final_{uuid.uuid4().hex}.{output_format}"
+        with thread_lock:
+            cap = cv2.VideoCapture(temp_path2)
+            out = cv2.VideoWriter(temp_final_path, fourcc, fps, (frame_height, frame_width) if rotate else (frame_width, frame_height))
+            if len(filtered_indices) > target_frames:
+                step = len(filtered_indices) / target_frames
+                final_indices = [filtered_indices[int(i * step)] for i in range(target_frames)]
+            else:
+                final_indices = filtered_indices
+            
+            for idx, frame_idx in enumerate(final_indices):
+                if cancel_event and cancel_event.is_set():
+                    cap.release()
+                    out.release()
+                    os.remove(temp_path2)
+                    return "Processing canceled by user"
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+                if ret:
+                    normalized_frame = normalize_frame(frame, clip_limit, saturation_multiplier)
+                    if normalized_frame is None:
+                        cap.release()
+                        out.release()
+                        os.remove(temp_path2)
+                        return "Memory error during processing"
+                    if rotate:
+                        normalized_frame = cv2.rotate(normalized_frame, cv2.ROTATE_90_CLOCKWISE)
+                    out.write(normalized_frame)
+                if progress_callback and idx % 10 == 0:
+                    elapsed = time.time() - start_time
+                    rate = idx / elapsed if elapsed > 0 else 0
+                    remaining = (len(final_indices) - idx) / rate if rate > 0 else 0
+                    progress_callback(66 + (idx / len(final_indices) * 34), idx, len(final_indices), remaining)
             cap.release()
             out.release()
             os.remove(temp_path2)
-            return "Processing canceled by user"
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-        ret, frame = cap.read()
-        if ret:
-            normalized_frame = normalize_frame(frame, clip_limit, saturation_multiplier)
-            if normalized_frame is None:
-                cap.release()
-                out.release()
-                os.remove(temp_path2)
-                return "Memory error during processing"
-            if rotate:
-                normalized_frame = cv2.rotate(normalized_frame, cv2.ROTATE_90_CLOCKWISE)
-            out.write(normalized_frame)
         
-        if progress_callback and idx % 10 == 0:
-            elapsed = time.time() - start_time
-            rate = idx / elapsed if elapsed > 0 else 0
-            remaining = (len(final_indices) - idx) / rate if rate > 0 else 0
-            progress_callback(66 + (idx / len(final_indices) * 34), idx, len(final_indices), remaining)
-    
-    cap.release()
-    out.release()
-    os.remove(temp_path2)
-    
-    if music_path and os.path.exists(music_path):
-        try:
-            cmd = [
-                'ffmpeg', '-stream_loop', '-1', '-i', music_path, '-i', temp_final_path,
-                '-c:v', 'libx264', '-preset', 'medium', '-c:a', 'aac', '-shortest', '-y', output_path
-            ]
-            subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-            os.remove(temp_final_path)
-            logging.info("Music added successfully to %s", output_path)
-        except subprocess.CalledProcessError as e:
-            logging.error("Error adding music: %s", e.stderr.decode())
-            os.rename(temp_final_path, output_path)
-    else:
-        try:
-            cmd = [
-                'ffmpeg', '-i', temp_final_path, '-c:v', 'libx264', '-preset', 'medium', '-an', '-y', output_path
-            ]
-            subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-            os.remove(temp_final_path)
-            logging.info("Video re-encoded to H.264 at %s", output_path)
-        except subprocess.CalledProcessError as e:
-            logging.error("Error re-encoding video: %s", e.stderr.decode())
-            os.rename(temp_final_path, output_path)
-    
-    return None if final_indices else "No frames written after trimming"
+        if music_path and os.path.exists(music_path):
+            try:
+                cmd = ['ffmpeg', '-stream_loop', '-1', '-i', music_path, '-i', temp_final_path,
+                       '-c:v', 'libx264', '-preset', 'medium', '-c:a', 'aac', '-shortest', '-y', output_path]
+                subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+                os.remove(temp_final_path)
+                logging.info(f"Music added to {output_path}")
+            except subprocess.CalledProcessError as e:
+                logging.error(f"Music addition failed: {e.stderr.decode()}")
+                os.rename(temp_final_path, output_path)
+        else:
+            try:
+                cmd = ['ffmpeg', '-i', temp_final_path, '-c:v', 'libx264', '-preset', 'medium', '-an', '-y', output_path]
+                subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+                os.remove(temp_final_path)
+                logging.info(f"Re-encoded to {output_path}")
+            except subprocess.CalledProcessError as e:
+                logging.error(f"Re-encoding failed: {e.stderr.decode()}")
+                os.rename(temp_final_path, output_path)
+        
+        return None if final_indices else "No frames written after trimming"
+    except Exception as e:
+        logging.error(f"Error in process_video_multi_pass: {str(e)}", exc_info=True)
+        return str(e)
 
 ### Main Application Class
 
@@ -302,8 +311,7 @@ class VideoProcessorApp:
         music_frame.pack(pady=5)
         self.music_label = ctk.CTkLabel(music_frame, text="No music selected")
         self.music_label.pack(side=tk.LEFT, padx=5)
-        select_music_button = ctk.CTkButton(music_frame, text="Select Music", command=self.select_music)
-        select_music_button.pack(side=tk.LEFT)
+        ctk.CTkButton(music_frame, text="Select Music", command=self.select_music).pack(side=tk.LEFT)
         self.music_path = None
         
         self.settings_button = ctk.CTkButton(root, text="Settings & Preview", command=self.open_settings)
@@ -340,7 +348,8 @@ class VideoProcessorApp:
         self.frame_queue = queue.Queue(maxsize=1)
         self.start_time = None
         self.preview_image = None
-        self.blank_ctk_image = ctk.CTkImage(light_image=Image.new('RGB', (200, 150), (0, 0, 0)), dark_image=Image.new('RGB', (200, 150), (0, 0, 0)), size=(200, 150))
+        self.blank_ctk_image = ctk.CTkImage(light_image=Image.new('RGB', (200, 150), (0, 0, 0)), 
+                                          dark_image=Image.new('RGB', (200, 150), (0, 0, 0)), size=(200, 150))
         self.root.after(100, self.process_queue)
         
         self.motion_threshold = 3000
@@ -390,40 +399,35 @@ class VideoProcessorApp:
         settings_frame = ctk.CTkFrame(self.settings_window)
         settings_frame.pack(side=tk.LEFT, padx=10, pady=10)
         
-        motion_label = ctk.CTkLabel(settings_frame, text="Motion Sensitivity")
-        motion_label.pack(pady=5)
+        ctk.CTkLabel(settings_frame, text="Motion Sensitivity").pack(pady=5)
         self.motion_slider = ctk.CTkSlider(settings_frame, from_=500, to=20000, number_of_steps=195, command=self.update_settings)
         self.motion_slider.set(self.motion_threshold)
         self.motion_slider.pack(pady=5)
         self.motion_value_label = ctk.CTkLabel(settings_frame, text=f"Threshold: {self.motion_threshold}")
         self.motion_value_label.pack(pady=5)
         
-        white_label = ctk.CTkLabel(settings_frame, text="White Threshold")
-        white_label.pack(pady=2)
+        ctk.CTkLabel(settings_frame, text="White Threshold").pack(pady=2)
         self.white_slider = ctk.CTkSlider(settings_frame, from_=100, to=255, number_of_steps=155, command=self.update_settings)
         self.white_slider.set(self.white_threshold)
         self.white_slider.pack(pady=2)
         self.white_value_label = ctk.CTkLabel(settings_frame, text=f"White: {self.white_threshold}")
         self.white_value_label.pack(pady=2)
         
-        black_label = ctk.CTkLabel(settings_frame, text="Black Threshold")
-        black_label.pack(pady=2)
+        ctk.CTkLabel(settings_frame, text="Black Threshold").pack(pady=2)
         self.black_slider = ctk.CTkSlider(settings_frame, from_=0, to=100, number_of_steps=100, command=self.update_settings)
         self.black_slider.set(self.black_threshold)
         self.black_slider.pack(pady=2)
         self.black_value_label = ctk.CTkLabel(settings_frame, text=f"Black: {self.black_threshold}")
         self.black_value_label.pack(pady=2)
         
-        clip_label = ctk.CTkLabel(settings_frame, text="CLAHE Clip Limit")
-        clip_label.pack(pady=2)
+        ctk.CTkLabel(settings_frame, text="CLAHE Clip Limit").pack(pady=2)
         self.clip_slider = ctk.CTkSlider(settings_frame, from_=0.5, to=5.0, number_of_steps=90, command=self.update_settings)
         self.clip_slider.set(self.clip_limit)
         self.clip_slider.pack(pady=2)
         self.clip_value_label = ctk.CTkLabel(settings_frame, text=f"Clip Limit: {self.clip_limit:.1f}")
         self.clip_value_label.pack(pady=2)
         
-        saturation_label = ctk.CTkLabel(settings_frame, text="Saturation Multiplier")
-        saturation_label.pack(pady=2)
+        ctk.CTkLabel(settings_frame, text="Saturation Multiplier").pack(pady=2)
         self.saturation_slider = ctk.CTkSlider(settings_frame, from_=0.5, to=2.0, number_of_steps=150, command=self.update_settings)
         self.saturation_slider.set(self.saturation_multiplier)
         self.saturation_slider.pack(pady=2)
@@ -465,8 +469,7 @@ class VideoProcessorApp:
             self.fps = self.preview_cap.get(cv2.CAP_PROP_FPS)
             self.total_frames = int(self.preview_cap.get(cv2.CAP_PROP_FRAME_COUNT))
             duration = self.total_frames / self.fps if self.fps > 0 else 0
-            duration_label = ctk.CTkLabel(settings_frame, text=f"Video duration: {duration:.2f} seconds")
-            duration_label.pack(pady=5)
+            ctk.CTkLabel(settings_frame, text=f"Video duration: {duration:.2f} seconds").pack(pady=5)
             
             start_time_frame = ctk.CTkFrame(settings_frame)
             start_time_frame.pack(pady=2)
@@ -504,14 +507,8 @@ class VideoProcessorApp:
             start_time_str = self.start_time_entry.get()
             end_time_str = self.end_time_entry.get()
             duration = self.total_frames / self.fps if self.fps > 0 else 0
-            try:
-                start_time = float(start_time_str) if start_time_str else 0
-            except ValueError:
-                start_time = 0
-            try:
-                end_time = float(end_time_str) if end_time_str else duration
-            except ValueError:
-                end_time = duration
+            start_time = float(start_time_str) if start_time_str else 0
+            end_time = float(end_time_str) if end_time_str else duration
             start_frame = max(0, min(int(start_time * self.fps), self.total_frames - 1))
             end_frame = max(start_frame + 1, min(int(end_time * self.fps), self.total_frames))
             self.start_frame = start_frame
@@ -545,18 +542,20 @@ class VideoProcessorApp:
             normalized = normalize_frame(frame, self.clip_limit, self.saturation_multiplier)
             if normalized is not None:
                 if is_white_or_black_frame(normalized, self.white_threshold, self.black_threshold):
-                    try:
-                        self.frame_queue.put(None, block=False)
-                    except queue.Full:
-                        self.frame_queue.get()
-                        self.frame_queue.put(None)
+                    with thread_lock:
+                        try:
+                            self.frame_queue.put(None, block=False)
+                        except queue.Full:
+                            self.frame_queue.get()
+                            self.frame_queue.put(None)
                 else:
                     frame_rgb = cv2.cvtColor(normalized, cv2.COLOR_BGR2RGB)
-                    try:
-                        self.frame_queue.put(frame_rgb, block=False)
-                    except queue.Full:
-                        self.frame_queue.get()
-                        self.frame_queue.put(frame_rgb)
+                    with thread_lock:
+                        try:
+                            self.frame_queue.put(frame_rgb, block=False)
+                        except queue.Full:
+                            self.frame_queue.get()
+                            self.frame_queue.put(frame_rgb)
             time.sleep(1 / 20)
     
     def update_preview(self):
@@ -660,7 +659,7 @@ class VideoProcessorApp:
         if not self.input_files:
             messagebox.showwarning("Warning", "No files selected.")
             return
-        if not self.generate_60s.get() and not self.generate_12min.get() and not self.generate_1h.get():
+        if not (self.generate_60s.get() or self.generate_12min.get() or self.generate_1h.get()):
             messagebox.showwarning("Warning", "Select at least one video to generate.")
             return
         for widget in self.output_frame.winfo_children():
@@ -698,7 +697,8 @@ class VideoProcessorApp:
                 self.queue.put(("task_start", f"{task_name} - {os.path.basename(input_file)}", 0))
                 
                 def progress_callback(progress, current, total, remaining):
-                    self.queue.put(("progress", progress, (current / total) * 100, remaining))
+                    with thread_lock:
+                        self.queue.put(("progress", progress, (current / total) * 100, remaining))
                 
                 error = process_video_multi_pass(
                     input_file, output_file, duration,
@@ -737,18 +737,19 @@ class VideoProcessorApp:
     
     def handle_message(self, message):
         """Handle queue messages to update UI."""
-        if message[0] == "task_start":
-            task_name, progress = message[1:]
+        msg_type, *args = message
+        if msg_type == "task_start":
+            task_name, progress = args
             self.current_task_label.configure(text=f"Current Task: {task_name}")
             self.progress.set(progress / 100)
             self.time_label.configure(text="Estimating time...")
-        elif message[0] == "progress":
-            progress_value, percentage, remaining = message[1:]
+        elif msg_type == "progress":
+            progress_value, percentage, remaining = args
             self.progress.set(progress_value / 100)
             remaining_min = remaining / 60 if remaining > 0 else 0
             self.time_label.configure(text=f"Est. Time Remaining: {remaining_min:.2f} min ({percentage:.2f}%)")
-        elif message[0] == "complete":
-            output_files, elapsed = message[1:]
+        elif msg_type == "complete":
+            output_files, elapsed = args
             minutes = int(elapsed // 60)
             seconds = int(elapsed % 60)
             time_str = f"{minutes} min {seconds} sec"
@@ -765,8 +766,8 @@ class VideoProcessorApp:
             self.current_task_label.configure(text="Current Task: N/A")
             self.time_label.configure(text=f"Process Complete in {time_str}")
             self.reset_ui()
-        elif message[0] == "canceled":
-            reason = message[1]
+        elif msg_type == "canceled":
+            reason = args[0]
             elapsed = time.time() - self.start_time if self.start_time else 0
             minutes = int(elapsed // 60)
             seconds = int(elapsed % 60)
@@ -789,7 +790,7 @@ class VideoProcessorApp:
         self.cancel_button.configure(state="disabled")
     
     def get_youtube_client(self):
-        """Get authenticated YouTube API client with increased timeout."""
+        """Get authenticated YouTube API client without http conflict."""
         if not hasattr(self, 'youtube_client'):
             credentials = None
             if os.path.exists('token.pickle'):
@@ -797,7 +798,7 @@ class VideoProcessorApp:
                     with open('token.pickle', 'rb') as token:
                         credentials = pickle.load(token)
                 except (pickle.PickleError, EOFError) as e:
-                    logging.error("Failed to load token.pickle: %s", str(e))
+                    logging.error(f"Failed to load token.pickle: {str(e)}")
                     os.remove('token.pickle')
                     credentials = None
             if not credentials or not credentials.valid:
@@ -805,7 +806,7 @@ class VideoProcessorApp:
                     try:
                         credentials.refresh(Request())
                     except Exception as e:
-                        logging.error("Failed to refresh credentials: %s", str(e))
+                        logging.error(f"Failed to refresh credentials: {str(e)}")
                         credentials = None
                 if not credentials:
                     if not os.path.exists('client_secrets.json'):
@@ -818,13 +819,13 @@ class VideoProcessorApp:
                         )
                         credentials = flow.run_local_server(port=0)
                     except Exception as e:
-                        logging.error("Failed to authenticate with YouTube API: %s", str(e))
-                        messagebox.showerror("Error", "Authentication failed. Please check client_secrets.json and try again.")
+                        logging.error(f"Failed to authenticate: {str(e)}")
+                        messagebox.showerror("Error", "Authentication failed. Check client_secrets.json.")
                         return None
                 with open('token.pickle', 'wb') as token:
                     pickle.dump(credentials, token)
-            http = httplib2.Http(timeout=600)
-            self.youtube_client = build('youtube', 'v3', credentials=credentials, http=http)
+            self.youtube_client = build('youtube', 'v3', credentials=credentials)  # Removed http param
+            logging.info("YouTube client initialized")
         return self.youtube_client
     
     def start_upload(self, file_path, task_name, button):
@@ -834,11 +835,11 @@ class VideoProcessorApp:
             button.configure(state="normal", text="Upload to YouTube")
             return
         if not validate_video_file(file_path):
-            messagebox.showerror("Error", "Invalid or corrupted video file. Please check the file and try again.")
+            messagebox.showerror("Error", "Invalid or corrupted video file.")
             button.configure(state="normal", text="Upload to YouTube")
             return
         if not check_network_stability():
-            messagebox.showerror("Error", "Network is unstable. Please check your connection and try again.")
+            messagebox.showerror("Error", "Network unstable. Check connection.")
             button.configure(state="normal", text="Upload to YouTube")
             return
         button.configure(state="disabled", text="Uploading...")
@@ -846,9 +847,9 @@ class VideoProcessorApp:
         thread.start()
     
     def upload_to_youtube(self, file_path, task_name, button):
-        """Upload video to YouTube with enhanced retry mechanism and error handling."""
-        max_retries = 5
-        retry_delay = 15
+        """Upload video to YouTube with enhanced retry and error handling."""
+        max_retries = 10
+        retry_delay = 20
         for attempt in range(max_retries):
             try:
                 youtube = self.get_youtube_client()
@@ -863,48 +864,24 @@ class VideoProcessorApp:
                     description += " #shorts"
                     tags.append('#shorts')
                 request_body = {
-                    'snippet': {
-                        'title': title,
-                        'description': description,
-                        'tags': tags,
-                        'categoryId': '22'
-                    },
-                    'status': {
-                        'privacyStatus': 'unlisted'
-                    }
+                    'snippet': {'title': title, 'description': description, 'tags': tags, 'categoryId': '22'},
+                    'status': {'privacyStatus': 'unlisted'}
                 }
-                media = MediaFileUpload(file_path, resumable=True, chunksize=1024 * 1024)
-                request = youtube.videos().insert(
-                    part='snippet,status',
-                    body=request_body,
-                    media_body=media
-                )
+                media = MediaFileUpload(file_path, resumable=True, chunksize=512 * 1024)  # Smaller chunks
+                request = youtube.videos().insert(part='snippet,status', body=request_body, media_body=media)
                 response = request.execute()
-                logging.info("Upload successful: %s", file_path)
+                logging.info(f"Upload successful: {file_path}")
                 self.root.after(0, lambda: messagebox.showinfo("Success", f"Video uploaded: https://youtu.be/{response['id']}"))
                 break
             except HttpError as e:
-                error_response = e.content.decode()
-                logging.warning("Upload attempt %d failed: HTTP Error - %s", attempt + 1, error_response)
+                logging.warning(f"Upload attempt {attempt + 1} failed: {e.content.decode()}")
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay * (attempt + 1))
                     continue
-                logging.error("Upload failed after %d retries: %s", max_retries, error_response)
-                self.root.after(0, lambda e=e: messagebox.showerror("Error", f"Failed to upload video: {error_response}"))
-            except json.JSONDecodeError as e:
-                logging.error("JSON parsing error during upload: %s", str(e))
-                self.root.after(0, lambda e=e: messagebox.showerror("Error", "Invalid response from YouTube API: {str(e)}"))
-                break
-            except (socket.timeout, requests.exceptions.RequestException) as e:
-                logging.warning("Upload attempt %d failed: Network Error - %s", attempt + 1, str(e))
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay * (attempt + 1))
-                    continue
-                logging.error("Upload failed after %d retries: %s", max_retries, str(e))
-                self.root.after(0, lambda e=e: messagebox.showerror("Error", f"Network error during upload: {str(e)}"))
+                self.root.after(0, lambda: messagebox.showerror("Error", f"Upload failed: {e.content.decode()}"))
             except Exception as e:
-                logging.error("Unexpected error during upload: %s", str(e), exc_info=True)
-                self.root.after(0, lambda e=e: messagebox.showerror("Error", f"Unexpected error during upload: {str(e)}"))
+                logging.error(f"Upload error: {str(e)}", exc_info=True)
+                self.root.after(0, lambda: messagebox.showerror("Error", f"Upload failed: {str(e)}"))
                 break
             finally:
                 self.root.after(0, lambda b=button: b.configure(state="normal", text="Upload to YouTube"))
