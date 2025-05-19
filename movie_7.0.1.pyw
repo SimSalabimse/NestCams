@@ -22,10 +22,10 @@ from googleapiclient.errors import HttpError
 import httplib2
 
 # Version number
-VERSION = "7.0.2"  # Updated to fix YouTube processing and Shorts upload
+VERSION = "7.0.3"  # Updated to address upload timeout
 
 # Set up logging
-logging.basicConfig(filename='upload_log.txt', level=logging.ERROR)
+logging.basicConfig(filename='upload_log.txt', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 ### Helper Functions
 
@@ -53,7 +53,6 @@ def normalize_frame(frame, clip_limit=1.0, saturation_multiplier=1.1):
         l_clahe = clahe.apply(l)
         lab_clahe = cv2.merge((l_clahe, a, b))
         frame_clahe = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
-        
         hsv = cv2.cvtColor(frame_clahe, cv2.COLOR_BGR2HSV)
         h, s, v = cv2.split(hsv)
         s = (s.astype('float32') * saturation_multiplier).clip(0, 255).astype('uint8')
@@ -62,11 +61,13 @@ def normalize_frame(frame, clip_limit=1.0, saturation_multiplier=1.1):
     except MemoryError:
         return None
 
-def process_video_multi_pass(input_path, output_path, desired_duration, motion_threshold=3000, sample_interval=5, white_threshold=200, black_threshold=50, clip_limit=1.0, saturation_multiplier=1.1, output_format='mp4', progress_callback=None, cancel_event=None, music_path=None):
+def process_video_multi_pass(input_path, output_path, desired_duration, motion_threshold=3000, sample_interval=5, 
+                             white_threshold=200, black_threshold=50, clip_limit=1.0, saturation_multiplier=1.1, 
+                             output_format='mp4', progress_callback=None, cancel_event=None, music_path=None):
     """Process video in multiple passes with H.264 encoding and optional music integration."""
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
-        print("Error: Could not open video file")
+        logging.error("Could not open video file: %s", input_path)
         return "Failed to open video file"
     
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -82,7 +83,6 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
     format_codecs = {'mp4': 'mp4v', 'avi': 'XVID', 'mkv': 'X264'}
     fourcc = cv2.VideoWriter_fourcc(*format_codecs.get(output_format, 'mp4v'))
     
-    # First pass: Motion detection
     temp_path1 = f"temp_intermediate_{uuid.uuid4().hex}.{output_format}"
     in_motion = False
     include_indices = []
@@ -99,18 +99,14 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
             break
         if frame_idx % sample_interval == 0 and prev_frame is not None:
             motion_score = compute_motion_score(prev_frame, frame, threshold=motion_threshold)
-            print(f"Frame {frame_idx}: Motion Score = {motion_score}, Threshold = {motion_threshold}")
             if motion_score > motion_threshold:
                 in_motion = True
                 include_indices.append(frame_idx)
-                print(f"Frame {frame_idx}: Included due to motion")
             elif motion_score <= motion_threshold and in_motion:
                 in_motion = False
-                print(f"Frame {frame_idx}: Motion stopped")
             prev_frame = frame
         elif in_motion:
             include_indices.append(frame_idx)
-            print(f"Frame {frame_idx}: Included due to ongoing motion")
         
         if progress_callback and frame_idx % 100 == 0:
             elapsed = time.time() - start_time
@@ -123,9 +119,7 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
     if not include_indices:
         target_frames = int(desired_duration * fps)
         include_indices = [i for i in range(0, total_frames, max(1, total_frames // target_frames))]
-        print("No motion detected, using fallback frames")
     
-    # Second pass: Write intermediate video
     cap = cv2.VideoCapture(input_path)
     out = cv2.VideoWriter(temp_path1, fourcc, fps, (frame_width, frame_height))
     for idx, frame_idx in enumerate(include_indices):
@@ -143,7 +137,6 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
     cap.release()
     out.release()
     
-    # Third pass: Filter white/black frames
     temp_path2 = f"temp_filtered_{uuid.uuid4().hex}.{output_format}"
     cap = cv2.VideoCapture(temp_path1)
     out = cv2.VideoWriter(temp_path2, fourcc, fps, (frame_width, frame_height))
@@ -173,7 +166,6 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
     out.release()
     os.remove(temp_path1)
     
-    # Final pass: Normalize and prepare for encoding
     target_frames = int(desired_duration * fps)
     cap = cv2.VideoCapture(temp_path2)
     temp_final_path = f"temp_final_{uuid.uuid4().hex}.{output_format}"
@@ -217,43 +209,28 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
     out.release()
     os.remove(temp_path2)
     
-    # Encode to H.264 with or without music
     if music_path and os.path.exists(music_path):
         try:
             cmd = [
-                'ffmpeg',
-                '-stream_loop', '-1',      # Loop music indefinitely
-                '-i', music_path,          # Audio input
-                '-i', temp_final_path,     # Video input
-                '-c:v', 'libx264',         # Re-encode video to H.264
-                '-preset', 'medium',       # Balance speed and quality
-                '-c:a', 'aac',             # Encode audio to AAC
-                '-shortest',               # Match duration to shortest input (video)
-                '-y',                      # Overwrite output file
-                output_path                # Final output path
+                'ffmpeg', '-stream_loop', '-1', '-i', music_path, '-i', temp_final_path,
+                '-c:v', 'libx264', '-preset', 'medium', '-c:a', 'aac', '-shortest', '-y', output_path
             ]
             subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
             os.remove(temp_final_path)
-            print(f"Music added successfully to {output_path}")
+            logging.info("Music added successfully to %s", output_path)
         except subprocess.CalledProcessError as e:
-            print(f"Error adding music: {e.stderr.decode()}")
+            logging.error("Error adding music: %s", e.stderr.decode())
             os.rename(temp_final_path, output_path)
     else:
         try:
             cmd = [
-                'ffmpeg',
-                '-i', temp_final_path,     # Video input
-                '-c:v', 'libx264',         # Re-encode video to H.264
-                '-preset', 'medium',       # Balance speed and quality
-                '-an',                     # No audio
-                '-y',                      # Overwrite output file
-                output_path                # Final output path
+                'ffmpeg', '-i', temp_final_path, '-c:v', 'libx264', '-preset', 'medium', '-an', '-y', output_path
             ]
             subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
             os.remove(temp_final_path)
-            print(f"Video re-encoded to H.264 at {output_path}")
+            logging.info("Video re-encoded to H.264 at %s", output_path)
         except subprocess.CalledProcessError as e:
-            print(f"Error re-encoding video: {e.stderr.decode()}")
+            logging.error("Error re-encoding video: %s", e.stderr.decode())
             os.rename(temp_final_path, output_path)
     
     return None if final_indices else "No frames written after trimming"
@@ -264,7 +241,7 @@ class VideoProcessorApp:
     def __init__(self, root):
         """Initialize GUI with music selection and video processing."""
         self.root = root
-        self.root.title(f"Bird Box Video Processor v{VERSION}")
+        self.root.title(f"B禁止使用s Video Processor v{VERSION}")
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("dark-blue")
         
@@ -295,7 +272,6 @@ class VideoProcessorApp:
         ctk.CTkLabel(format_frame, text="Output Format:").pack(side=tk.LEFT, padx=5)
         ctk.CTkOptionMenu(format_frame, variable=self.output_format_var, values=["mp4", "avi", "mkv"]).pack(side=tk.LEFT)
         
-        # Music selection UI
         music_frame = ctk.CTkFrame(root)
         music_frame.pack(pady=5)
         self.music_label = ctk.CTkLabel(music_frame, text="No music selected")
@@ -335,13 +311,12 @@ class VideoProcessorApp:
         self.input_files = []
         self.cancel_event = threading.Event()
         self.queue = queue.Queue()
-        self.frame_queue = queue.Queue(maxsize=1)  # Fixed syntax error
+        self.frame_queue = queue.Queue(maxsize=1)
         self.start_time = None
         self.preview_image = None
         self.blank_ctk_image = ctk.CTkImage(light_image=Image.new('RGB', (200, 150), (0, 0, 0)), dark_image=Image.new('RGB', (200, 150), (0, 0, 0)), size=(200, 150))
         self.root.after(100, self.process_queue)
         
-        # Default settings
         self.motion_threshold = 3000
         self.white_threshold = 200
         self.black_threshold = 50
@@ -357,15 +332,15 @@ class VideoProcessorApp:
                 self.clip_limit = float(settings.get("clip_limit", 1.0))
                 self.saturation_multiplier = float(settings.get("saturation_multiplier", 1.1))
         except (FileNotFoundError, json.JSONDecodeError, ValueError):
-            print("Warning: Could not load settings, using defaults")
+            logging.warning("Could not load settings, using defaults")
         
         self.presets = {}
         try:
             with open("presets.json", "r") as f:
                 self.presets = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
-            print("No presets found")
-    
+            logging.info("No presets found")
+
     def select_music(self):
         """Handle music file selection."""
         music_path = filedialog.askopenfilename(filetypes=[("Audio files", "*.mp3 *.wav *.ogg")])
@@ -381,7 +356,7 @@ class VideoProcessorApp:
         ctk.set_appearance_mode(theme)
     
     def open_settings(self):
-        """Open settings window with Mini Video Player and range selection."""
+        """Open settings window with preview."""
         self.settings_window = ctk.CTkToplevel(self.root)
         self.settings_window.title("Settings & Preview")
         self.settings_window.protocol("WM_DELETE_WINDOW", self.on_settings_close)
@@ -444,13 +419,11 @@ class VideoProcessorApp:
         ctk.CTkButton(settings_frame, text="Save Settings", command=self.save_settings).pack(pady=10)
         ctk.CTkButton(settings_frame, text="Reset to Default", command=self.reset_to_default).pack(pady=10)
         
-        # Preview Frame with Mini Video Player
         self.preview_frame = ctk.CTkFrame(self.settings_window)
         self.preview_frame.pack(side=tk.RIGHT, padx=10, pady=10)
         self.preview_label = ctk.CTkLabel(self.preview_frame, text="Select a video to enable preview")
         self.preview_label.pack(pady=5)
         
-        # Playback controls
         control_frame = ctk.CTkFrame(self.preview_frame)
         control_frame.pack(pady=5)
         self.play_button = ctk.CTkButton(control_frame, text="Play Preview", command=self.start_preview_playback)
@@ -480,7 +453,7 @@ class VideoProcessorApp:
             ctk.CTkLabel(end_time_frame, text="End time (s):").pack(side=tk.LEFT)
             self.end_time_entry = ctk.CTkEntry(end_time_frame, placeholder_text=f"{duration:.2f}")
             self.end_time_entry.pack(side=tk.LEFT)
-            self.start_preview_playback()  # Auto-start preview for convenience
+            self.start_preview_playback()
     
     def update_settings(self, value):
         """Update settings from sliders."""
@@ -497,7 +470,7 @@ class VideoProcessorApp:
         self.saturation_value_label.configure(text=f"Saturation: {self.saturation_multiplier:.1f}")
     
     def start_preview_playback(self):
-        """Start the Mini Video Player with selected range."""
+        """Start video preview."""
         if not self.preview_cap or not self.preview_cap.isOpened():
             self.preview_label.configure(text="Select a video to enable preview", image=None)
             return
@@ -526,7 +499,7 @@ class VideoProcessorApp:
             self.update_preview()
     
     def stop_preview_playback(self):
-        """Stop the Mini Video Player."""
+        """Stop video preview."""
         if self.preview_running.is_set():
             self.preview_running.clear()
             if self.playback_thread:
@@ -536,7 +509,7 @@ class VideoProcessorApp:
             self.preview_label.configure(image=self.blank_ctk_image, text="Preview stopped")
     
     def playback_loop(self):
-        """Loop to play preview video within selected range."""
+        """Playback loop for preview."""
         while self.preview_running.is_set():
             if self.preview_cap.get(cv2.CAP_PROP_POS_FRAMES) >= self.end_frame:
                 self.preview_cap.set(cv2.CAP_PROP_POS_FRAMES, self.start_frame)
@@ -550,18 +523,18 @@ class VideoProcessorApp:
                         self.frame_queue.put(None, block=False)
                     except queue.Full:
                         self.frame_queue.get()
-                        self.frame_queue.put(None, block=False)
+                        self.frame_queue.put(None)
                 else:
                     frame_rgb = cv2.cvtColor(normalized, cv2.COLOR_BGR2RGB)
                     try:
                         self.frame_queue.put(frame_rgb, block=False)
                     except queue.Full:
                         self.frame_queue.get()
-                        self.frame_queue.put(frame_rgb, block=False)
-            time.sleep(1 / 20)  # 20 FPS
+                        self.frame_queue.put(frame_rgb)
+            time.sleep(1 / 20)
     
     def update_preview(self):
-        """Update the preview label from the frame queue."""
+        """Update preview image."""
         if not self.preview_running.is_set():
             return
         try:
@@ -584,7 +557,7 @@ class VideoProcessorApp:
         self.settings_window.destroy()
     
     def save_preset(self):
-        """Save current settings as a preset."""
+        """Save current settings as preset."""
         preset_name = self.preset_name_entry.get().strip()
         if not preset_name:
             messagebox.showwarning("Warning", "Enter a preset name.")
@@ -619,7 +592,7 @@ class VideoProcessorApp:
             messagebox.showinfo("Info", f"Preset '{preset}' loaded.")
     
     def save_settings(self):
-        """Save settings to instance and file."""
+        """Save settings to file."""
         self.motion_threshold = int(self.motion_slider.get())
         self.white_threshold = int(self.white_slider.get())
         self.black_threshold = int(self.black_slider.get())
@@ -650,7 +623,7 @@ class VideoProcessorApp:
         self.update_settings(0)
     
     def browse_files(self):
-        """Handle multiple file selection."""
+        """Handle file selection."""
         self.input_files = filedialog.askopenfilenames(filetypes=[("Video files", "*.mp4 *.avi *.mkv")])
         if self.input_files:
             self.label.configure(text=f"Selected: {len(self.input_files)} file(s)")
@@ -677,7 +650,7 @@ class VideoProcessorApp:
         threading.Thread(target=self.process_video_thread).start()
     
     def process_video_thread(self):
-        """Process videos in background."""
+        """Process videos in a separate thread."""
         selected_videos = []
         if self.generate_60s.get():
             selected_videos.append(("Generate 60s Video", 60))
@@ -727,7 +700,7 @@ class VideoProcessorApp:
         self.cancel_event.set()
     
     def process_queue(self):
-        """Update GUI from queue."""
+        """Process queue messages for UI updates."""
         try:
             while True:
                 message = self.queue.get_nowait()
@@ -737,7 +710,7 @@ class VideoProcessorApp:
         self.root.after(100, self.process_queue)
     
     def handle_message(self, message):
-        """Handle queue messages."""
+        """Handle queue messages to update UI."""
         if message[0] == "task_start":
             task_name, progress = message[1:]
             self.current_task_label.configure(text=f"Current Task: {task_name}")
@@ -760,8 +733,8 @@ class VideoProcessorApp:
                 file_frame.pack(fill='x', pady=2)
                 label = ctk.CTkLabel(file_frame, text=f"{task}: {file}")
                 label.pack(side=tk.LEFT, padx=5)
-                upload_button = ctk.CTkButton(file_frame, text="Upload to YouTube")
-                upload_button.configure(command=lambda f=file, t=task, b=upload_button: self.start_upload(f, t, b))
+                upload_button = ctk.CTkButton(file_frame, text="Upload to YouTube", 
+                                            command=lambda f=file, t=task, b=upload_button: self.start_upload(f, t, b))
                 upload_button.pack(side=tk.RIGHT, padx=5)
             self.current_task_label.configure(text="Current Task: N/A")
             self.time_label.configure(text=f"Process Complete in {time_str}")
@@ -781,7 +754,7 @@ class VideoProcessorApp:
             self.reset_ui()
     
     def reset_ui(self):
-        """Reset UI state."""
+        """Reset UI controls to initial state."""
         self.switch_60s.configure(state="normal")
         self.switch_12min.configure(state="normal")
         self.switch_1h.configure(state="normal")
@@ -810,8 +783,7 @@ class VideoProcessorApp:
                     credentials = flow.run_local_server(port=0)
                 with open('token.pickle', 'wb') as token:
                     pickle.dump(credentials, token)
-            # Create an Http object with increased timeout (5 minutes)
-            http = httplib2.Http(timeout=300)
+            http = httplib2.Http(timeout=600)  # Increased to 10 minutes
             self.youtube_client = build('youtube', 'v3', credentials=credentials, http=http)
         return self.youtube_client
     
@@ -822,9 +794,9 @@ class VideoProcessorApp:
         thread.start()
     
     def upload_to_youtube(self, file_path, task_name, button):
-        """Upload video to YouTube as unlisted, with Shorts designation for 60s videos and retry mechanism."""
-        max_retries = 3
-        retry_delay = 10  # seconds
+        """Upload video to YouTube with enhanced retry mechanism."""
+        max_retries = 5  # Increased from 3
+        retry_delay = 15  # Increased from 10 seconds
         for attempt in range(max_retries):
             try:
                 youtube = self.get_youtube_client()
@@ -833,7 +805,7 @@ class VideoProcessorApp:
                 duration_str = task_name.split()[1]  # e.g., "60s"
                 title = f"Bird Box Video - {duration_str}"
                 description = "Uploaded via Bird Box Video Processor"
-                tags = ['bird', 'nature', 'video']  # Corrected from 'selalu'
+                tags = ['bird', 'nature', 'video']
                 if duration_str == "60s":
                     title += " #shorts"
                     description += " #shorts"
@@ -849,30 +821,29 @@ class VideoProcessorApp:
                         'privacyStatus': 'unlisted'
                     }
                 }
-                media = MediaFileUpload(file_path, resumable=True)
+                media = MediaFileUpload(file_path, resumable=True, chunksize=1024 * 1024)  # 1MB chunks
                 request = youtube.videos().insert(
                     part='snippet,status',
                     body=request_body,
                     media_body=media
                 )
                 response = request.execute()
+                logging.info("Upload successful: %s", file_path)
                 self.root.after(0, lambda: messagebox.showinfo("Success", f"Video uploaded: https://youtu.be/{response['id']}"))
-                break  # Exit the loop if successful
+                break
             except (socket.timeout, HttpError) as e:
+                logging.warning("Upload attempt %d failed: %s", attempt + 1, str(e))
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
                     continue
-                else:
-                    logging.error("Upload failed after retries", exc_info=True)
-                    self.root.after(0, lambda e=e: messagebox.showerror("Error", f"Failed to upload video: {str(e)}"))
+                logging.error("Upload failed after %d retries: %s", max_retries, str(e))
+                self.root.after(0, lambda e=e: messagebox.showerror("Error", f"Failed to upload video: {str(e)}"))
             except Exception as e:
-                logging.error("Unexpected error during upload", exc_info=True)
+                logging.error("Unexpected error during upload: %s", str(e), exc_info=True)
                 self.root.after(0, lambda e=e: messagebox.showerror("Error", f"Failed to upload video: {str(e)}"))
                 break
             finally:
                 self.root.after(0, lambda b=button: b.configure(state="normal", text="Upload to YouTube"))
-
-### Entry Point
 
 if __name__ == "__main__":
     root = ctk.CTk()
