@@ -17,9 +17,13 @@ from google.auth.transport.requests import Request
 import pickle
 import subprocess
 import logging
-import speedtest
-from googleapiclient.errors import HttpError
 import requests
+
+try:
+    import speedtest
+except ImportError:
+    speedtest = None
+    logging.warning("speedtest module not found. Network stability checks will be limited.")
 
 # Version number
 VERSION = "7.0.7"  # Updated to fix upload errors, memory optimization, and threading
@@ -52,7 +56,6 @@ def is_white_or_black_frame(frame, white_threshold=200, black_threshold=50):
 def normalize_frame(frame, clip_limit=1.0, saturation_multiplier=1.1):
     """Normalize frame brightness and enhance saturation with memory optimization."""
     try:
-        # Resize frame to reduce memory usage
         frame = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2))
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
@@ -62,7 +65,7 @@ def normalize_frame(frame, clip_limit=1.0, saturation_multiplier=1.1):
         frame_clahe = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
         hsv = cv2.cvtColor(frame_clahe, cv2.COLOR_BGR2HSV)
         h, s, v = cv2.split(hsv)
-        s = cv2.multiply(s, saturation_multiplier, dtype=cv2.CV_8U)  # Use uint8 to save memory
+        s = cv2.multiply(s, saturation_multiplier, dtype=cv2.CV_8U)
         hsv_enhanced = cv2.merge((h, s, v))
         return cv2.cvtColor(hsv_enhanced, cv2.COLOR_HSV2BGR)
     except MemoryError:
@@ -81,12 +84,17 @@ def validate_video_file(file_path):
         return False
 
 def check_network_stability():
-    """Enhanced network stability check with speed test."""
+    """Enhanced network stability check with speed test or fallback."""
     try:
         response = requests.get("https://www.google.com", timeout=5)
         if response.status_code != 200:
             logging.warning(f"Network ping failed: Status {response.status_code}")
             return False
+        
+        if speedtest is None:
+            logging.info("No speedtest module available. Relying on ping test only.")
+            return True
+        
         st = speedtest.Speedtest()
         st.get_best_server()
         upload_speed = st.upload() / 1_000_000  # Mbps
@@ -262,7 +270,7 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
                 os.remove(temp_final_path)
                 logging.info(f"Re-encoded to {output_path}")
             except subprocess.CalledProcessError as e:
-                logging.error(f"Re-encoding failed: {e.stderr.decode()}")
+                logging.error(f"Re_encoding failed: {e.stderr.decode()}")
                 os.rename(temp_final_path, output_path)
         
         return None if final_indices else "No frames written after trimming"
@@ -824,7 +832,7 @@ class VideoProcessorApp:
                         return None
                 with open('token.pickle', 'wb') as token:
                     pickle.dump(credentials, token)
-            self.youtube_client = build('youtube', 'v3', credentials=credentials)  # Removed http param
+            self.youtube_client = build('youtube', 'v3', credentials=credentials)
             logging.info("YouTube client initialized")
         return self.youtube_client
     
@@ -867,7 +875,7 @@ class VideoProcessorApp:
                     'snippet': {'title': title, 'description': description, 'tags': tags, 'categoryId': '22'},
                     'status': {'privacyStatus': 'unlisted'}
                 }
-                media = MediaFileUpload(file_path, resumable=True, chunksize=512 * 1024)  # Smaller chunks
+                media = MediaFileUpload(file_path, resumable=True, chunksize=512 * 1024)
                 request = youtube.videos().insert(part='snippet,status', body=request_body, media_body=media)
                 response = request.execute()
                 logging.info(f"Upload successful: {file_path}")
