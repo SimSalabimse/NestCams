@@ -28,7 +28,7 @@ except ImportError:
     logging.warning("speedtest module not found. Network stability checks will be limited.")
 
 # Version number
-VERSION = "7.1.0"
+VERSION = "7.1.1"  # Updated to reflect the frame rate adjustment fix
 
 # Set up debug logging
 logging.basicConfig(filename='upload_log.txt', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -218,21 +218,36 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
             if status_callback:
                 status_callback("Frame filtering completed")
 
-            # Select Frames for Final Video
+            if len(filtered_frames) == 0:
+                logging.warning("No frames selected for the final video")
+                log_session("Warning: No frames selected for the final video")
+                return "No frames written after processing"
+
+            # Calculate the number of frames
+            num_frames = len(filtered_frames)
+
+            # Calculate the required frame rate to achieve desired_duration
             target_frames_count = int(desired_duration * fps)
+            if num_frames < target_frames_count:
+                new_fps = num_frames / desired_duration
+                logging.info(f"Adjusting frame rate to {new_fps:.2f} fps to meet desired duration")
+                log_session(f"Adjusting frame rate to {new_fps:.2f} fps to meet desired duration")
+            else:
+                new_fps = fps  # Use original fps if we have enough frames
+
+            # Select frames for final video
             if len(filtered_frames) > target_frames_count:
                 step = len(filtered_frames) / target_frames_count
                 selected_frames = [filtered_frames[int(i * step)] for i in range(target_frames_count)]
             else:
                 selected_frames = filtered_frames
 
-            # Save Selected Frames as Images
+            # Save selected frames as images
             if status_callback:
                 status_callback("Saving processed frames...")
             logging.info("Saving processed frames")
             log_session("Saving processed frames")
-            frame_counter = 0
-            for frame_idx in selected_frames:
+            for frame_counter, frame_idx in enumerate(selected_frames):
                 if cancel_event and cancel_event.is_set():
                     return "Processing canceled by user"
                 frame = read_frame(input_path, frame_idx)
@@ -244,24 +259,18 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
                 if rotate:
                     normalized_frame = cv2.rotate(normalized_frame, cv2.ROTATE_90_CLOCKWISE)
                 cv2.imwrite(os.path.join(temp_dir, f"frame_{frame_counter:04d}.jpg"), normalized_frame)
-                frame_counter += 1
-                if progress_callback and frame_counter % 10 == 0:
-                    progress = 30 + (frame_counter / len(selected_frames)) * 30  # 30 to 60%
+                if progress_callback and (frame_counter + 1) % 10 == 0:
+                    progress = 30 + ((frame_counter + 1) / len(selected_frames)) * 30  # 30 to 60%
                     elapsed = time.time() - start_time
-                    rate = frame_counter / elapsed if elapsed > 0 else 1e-6
-                    remaining = (len(selected_frames) - frame_counter) / rate if rate > 0 else 0
-                    progress_callback(progress, frame_counter, len(selected_frames), remaining)
-            logging.info(f"Saved {frame_counter} frames to temporary directory")
-            log_session(f"Saved {frame_counter} frames to temporary directory")
+                    rate = (frame_counter + 1) / elapsed if elapsed > 0 else 1e-6
+                    remaining = (len(selected_frames) - (frame_counter + 1)) / rate if rate > 0 else 0
+                    progress_callback(progress, frame_counter + 1, len(selected_frames), remaining)
+            logging.info(f"Saved {len(selected_frames)} frames to temporary directory")
+            log_session(f"Saved {len(selected_frames)} frames to temporary directory")
             if status_callback:
                 status_callback("Frames saved")
 
-            if frame_counter == 0:
-                logging.warning("No frames selected for the final video")
-                log_session("Warning: No frames selected for the final video")
-                return "No frames written after processing"
-
-            # Create Video with FFmpeg
+            # Create video with FFmpeg using new_fps
             if status_callback:
                 status_callback("Creating video from frames...")
             logging.info("Creating video from frames with FFmpeg")
@@ -270,21 +279,21 @@ def process_video_multi_pass(input_path, output_path, desired_duration, motion_t
                 progress_callback(60, 0, 0, 0)  # Set to 60% before FFmpeg
             temp_final_path = f"temp_final_{uuid.uuid4().hex}.mp4"
             cmd = [
-                'ffmpeg', '-framerate', str(fps), '-i', os.path.join(temp_dir, 'frame_%04d.jpg'),
+                'ffmpeg', '-framerate', str(new_fps), '-i', os.path.join(temp_dir, 'frame_%04d.jpg'),
                 '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-y', temp_final_path
             ]
             subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-            logging.info("Video created from frames")
-            log_session("Video created from frames")
+            logging.info("Video created from frames with adjusted frame rate")
+            log_session("Video created from frames with adjusted frame rate")
 
-            # Add Music or Silent Audio
+            # Add music or silent audio
             if music_path and os.path.exists(music_path):
                 if status_callback:
                     status_callback("Adding music...")
                 logging.info("Adding music with FFmpeg")
                 log_session("Adding music with FFmpeg")
                 cmd = [
-                    'ffmpeg', '-stream_loop', '-1', '-i', music_path, '-i', temp_final_path,
+                    'ffmpeg', '-i', temp_final_path, '-i', music_path,
                     '-c:v', 'copy', '-c:a', 'aac', '-shortest', '-y', output_path
                 ]
                 subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
