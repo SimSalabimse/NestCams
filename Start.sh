@@ -2,7 +2,7 @@
 
 echo "Updating repository..."
 # Adjust path to match Raspberry Pi's filesystem (e.g., /home/pi/NestCams)
-cd /home/pi/Videos/DayRecordings2025/NestCams || exit
+cd /home/simsalabim/Documents/NestCams || exit
 git pull
 
 echo "Starting..."
