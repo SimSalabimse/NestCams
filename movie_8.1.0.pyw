@@ -28,7 +28,7 @@ except ImportError:
     logging.warning("speedtest module not found. Network stability checks will be limited.")
 
 # Version number
-VERSION = "8.1.0"  # Updated to match the running script
+VERSION = "8.1.0"
 
 # Set up debug logging
 logging.basicConfig(filename='upload_log.txt', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -391,9 +391,11 @@ class VideoProcessorApp:
         self.black_threshold = 50
         self.clip_limit = 1.0
         self.saturation_multiplier = 1.1
-        self.music_paths = {"default": None, 60: None, 720: None, 3600: None}
         self.music_volume = 1.0
+        self.preview_running = threading.Event()  # Initialize preview_running here
         
+        # Initialize music_paths with defaults
+        self.music_paths = {"default": None, 60: None, 720: None, 3600: None}
         try:
             with open("settings.json", "r") as f:
                 settings = json.load(f)
@@ -403,8 +405,11 @@ class VideoProcessorApp:
                 self.clip_limit = float(settings.get("clip_limit", 1.0))
                 self.saturation_multiplier = float(settings.get("saturation_multiplier", 1.1))
                 self.music_volume = float(settings.get("music_volume", 1.0))
-                music_paths = settings.get("music_paths", {})
-                self.music_paths = {int(k) if k.isdigit() else k: v for k in music_paths}
+                loaded_music_paths = settings.get("music_paths", {})
+                # Merge loaded music paths with defaults
+                for key in self.music_paths:
+                    if str(key) in loaded_music_paths:
+                        self.music_paths[key] = loaded_music_paths[str(key)]
             log_session("Loaded settings from settings.json")
         except (FileNotFoundError, json.JSONDecodeError, ValueError):
             logging.warning("Could not load settings, using defaults")
@@ -428,13 +433,7 @@ class VideoProcessorApp:
         """Open settings window with preview."""
         self.settings_window = ctk.CTkToplevel(self.root)
         self.settings_window.title("Settings & Preview")
-        # Safety check for on_settings_close method
-        if hasattr(self, 'on_settings_close'):
-            self.settings_window.protocol("WM_DELETE_WINDOW", self.on_settings_close)
-        else:
-            logging.error("on_settings_close method not found; using default destroy")
-            log_session("Error: on_settings_close method not found; using default destroy")
-            self.settings_window.protocol("WM_DELETE_WINDOW", self.settings_window.destroy)
+        self.settings_window.protocol("WM_DELETE_WINDOW", self.on_settings_close)
         log_session("Opened settings and preview window")
         
         settings_frame = ctk.CTkFrame(self.settings_window)
@@ -484,7 +483,8 @@ class VideoProcessorApp:
         default_music_frame = ctk.CTkFrame(music_settings_frame)
         default_music_frame.pack(pady=2)
         ctk.CTkLabel(default_music_frame, text="Default Music:").pack(side=tk.LEFT)
-        self.music_label_default = ctk.CTkLabel(default_music_frame, text="No music selected" if not self.music_paths["default"] else os.path.basename(self.music_paths["default"]))
+        default_path = self.music_paths.get("default")
+        self.music_label_default = ctk.CTkLabel(default_music_frame, text="No music selected" if not default_path else os.path.basename(default_path))
         self.music_label_default.pack(side=tk.LEFT, padx=5)
         ctk.CTkButton(default_music_frame, text="Select", command=self.select_music_default).pack(side=tk.LEFT)
         
@@ -492,7 +492,8 @@ class VideoProcessorApp:
         music_60s_frame = ctk.CTkFrame(music_settings_frame)
         music_60s_frame.pack(pady=2)
         ctk.CTkLabel(music_60s_frame, text="Music for 60s Video:").pack(side=tk.LEFT)
-        self.music_label_60s = ctk.CTkLabel(music_60s_frame, text="No music selected" if not self.music_paths[60] else os.path.basename(self.music_paths[60]))
+        path_60s = self.music_paths.get(60)
+        self.music_label_60s = ctk.CTkLabel(music_60s_frame, text="No music selected" if not path_60s else os.path.basename(path_60s))
         self.music_label_60s.pack(side=tk.LEFT, padx=5)
         ctk.CTkButton(music_60s_frame, text="Select", command=self.select_music_60s).pack(side=tk.LEFT)
         
@@ -500,7 +501,8 @@ class VideoProcessorApp:
         music_12min_frame = ctk.CTkFrame(music_settings_frame)
         music_12min_frame.pack(pady=2)
         ctk.CTkLabel(music_12min_frame, text="Music for 12min Video:").pack(side=tk.LEFT)
-        self.music_label_12min = ctk.CTkLabel(music_12min_frame, text="No music selected" if not self.music_paths[720] else os.path.basename(self.music_paths[720]))
+        path_12min = self.music_paths.get(720)
+        self.music_label_12min = ctk.CTkLabel(music_12min_frame, text="No music selected" if not path_12min else os.path.basename(path_12min))
         self.music_label_12min.pack(side=tk.LEFT, padx=5)
         ctk.CTkButton(music_12min_frame, text="Select", command=self.select_music_12min).pack(side=tk.LEFT)
         
@@ -508,7 +510,8 @@ class VideoProcessorApp:
         music_1h_frame = ctk.CTkFrame(music_settings_frame)
         music_1h_frame.pack(pady=2)
         ctk.CTkLabel(music_1h_frame, text="Music for 1h Video:").pack(side=tk.LEFT)
-        self.music_label_1h = ctk.CTkLabel(music_1h_frame, text="No music selected" if not self.music_paths[3600] else os.path.basename(self.music_paths[3600]))
+        path_1h = self.music_paths.get(3600)
+        self.music_label_1h = ctk.CTkLabel(music_1h_frame, text="No music selected" if not path_1h else os.path.basename(path_1h))
         self.music_label_1h.pack(side=tk.LEFT, padx=5)
         ctk.CTkButton(music_1h_frame, text="Select", command=self.select_music_1h).pack(side=tk.LEFT)
         
@@ -535,46 +538,49 @@ class VideoProcessorApp:
         ctk.CTkButton(settings_frame, text="Save Settings", command=self.save_settings).pack(pady=10)
         ctk.CTkButton(settings_frame, text="Reset to Default", command=self.reset_to_default).pack(pady=10)
         
+        # Preview Section
         self.preview_frame = ctk.CTkFrame(self.settings_window)
         self.preview_frame.pack(side=tk.RIGHT, padx=10, pady=10)
-        self.preview_label = ctk.CTkLabel(self.preview_frame, text="Select a video to enable preview")
+        self.preview_label = ctk.CTkLabel(self.preview_frame, text="Select a video to enable preview", image=self.blank_ctk_image)
         self.preview_label.pack(pady=5)
         
         control_frame = ctk.CTkFrame(self.preview_frame)
         control_frame.pack(pady=5)
-        self.play_button = ctk.CTkButton(control_frame, text="Play Preview", command=self.start_preview_playback)
+        self.play_button = ctk.CTkButton(control_frame, text="Play Preview", command=self.start_preview_playback, state="disabled")
         self.play_button.pack(side=tk.LEFT, padx=5)
         self.stop_button = ctk.CTkButton(control_frame, text="Stop Preview", command=self.stop_preview_playback, state="disabled")
         self.stop_button.pack(side=tk.LEFT, padx=5)
         
         self.preview_cap = None
         self.playback_thread = None
-        self.preview_running = threading.Event()
         if self.input_files:
             self.preview_cap = cv2.VideoCapture(self.input_files[0])
-            self.fps = self.preview_cap.get(cv2.CAP_PROP_FPS)
-            self.total_frames = int(self.preview_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            duration = self.total_frames / self.fps if self.fps > 0 else 0
-            ctk.CTkLabel(settings_frame, text=f"Video duration: {duration:.2f} seconds").pack(pady=5)
-            
-            start_time_frame = ctk.CTkFrame(settings_frame)
-            start_time_frame.pack(pady=2)
-            ctk.CTkLabel(start_time_frame, text="Start time (s):").pack(side=tk.LEFT)
-            self.start_time_entry = ctk.CTkEntry(start_time_frame, placeholder_text="0")
-            self.start_time_entry.pack(side=tk.LEFT)
-            
-            end_time_frame = ctk.CTkFrame(settings_frame)
-            end_time_frame.pack(pady=2)
-            ctk.CTkLabel(end_time_frame, text="End time (s):").pack(side=tk.LEFT)
-            self.end_time_entry = ctk.CTkEntry(end_time_frame, placeholder_text=f"{duration:.2f}")
-            self.end_time_entry.pack(side=tk.LEFT)
-            self.start_preview_playback()
+            if self.preview_cap.isOpened():
+                self.fps = self.preview_cap.get(cv2.CAP_PROP_FPS)
+                self.total_frames = int(self.preview_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                duration = self.total_frames / self.fps if self.fps > 0 else 0
+                ctk.CTkLabel(settings_frame, text=f"Video duration: {duration:.2f} seconds").pack(pady=5)
+                
+                start_time_frame = ctk.CTkFrame(settings_frame)
+                start_time_frame.pack(pady=2)
+                ctk.CTkLabel(start_time_frame, text="Start time (s):").pack(side=tk.LEFT)
+                self.start_time_entry = ctk.CTkEntry(start_time_frame, placeholder_text="0")
+                self.start_time_entry.pack(side=tk.LEFT)
+                
+                end_time_frame = ctk.CTkFrame(settings_frame)
+                end_time_frame.pack(pady=2)
+                ctk.CTkLabel(end_time_frame, text="End time (s):").pack(side=tk.LEFT)
+                self.end_time_entry = ctk.CTkEntry(end_time_frame, placeholder_text=f"{duration:.2f}")
+                self.end_time_entry.pack(side=tk.LEFT)
+                self.play_button.configure(state="normal")
     
     def on_settings_close(self):
         """Handle settings window close."""
-        self.stop_preview_playback()
+        if hasattr(self, 'preview_running') and self.preview_running.is_set():
+            self.stop_preview_playback()
         if self.preview_cap:
             self.preview_cap.release()
+            self.preview_cap = None
         self.settings_window.destroy()
         log_session("Closed settings and preview window")
 
@@ -650,14 +656,11 @@ class VideoProcessorApp:
             "clip_limit": self.clip_limit,
             "saturation_multiplier": self.saturation_multiplier,
             "music_volume": self.music_volume,
-            "music_paths": {str(k): v for k in self.music_paths}
+            "music_paths": {str(k): v for k, v in self.music_paths.items()}
         }
         with open("settings.json", "w") as f:
             json.dump(settings, f)
-        self.stop_preview_playback()
-        if self.preview_cap:
-            self.preview_cap.release()
-        self.settings_window.destroy()
+        self.on_settings_close()
         log_session("Saved settings and closed settings window")
     
     def reset_to_default(self):
@@ -974,10 +977,9 @@ class VideoProcessorApp:
             finally:
                 self.root.after(0, lambda b=button: b.configure(state="normal", text="Upload to YouTube"))
 
-    # Methods referenced in on_settings_close
     def start_preview_playback(self):
         """Start preview playback."""
-        if self.preview_cap and not self.preview_running.is_set():
+        if self.preview_cap and self.preview_cap.isOpened() and not self.preview_running.is_set():
             self.preview_running.set()
             self.play_button.configure(state="disabled")
             self.stop_button.configure(state="normal")
@@ -991,7 +993,8 @@ class VideoProcessorApp:
             self.preview_running.clear()
             if self.playback_thread:
                 self.playback_thread.join()
-            self.play_button.configure(state="normal")
+                self.playback_thread = None
+            self.play_button.configure(state="normal" if self.preview_cap and self.preview_cap.isOpened() else "disabled")
             self.stop_button.configure(state="disabled")
             self.preview_label.configure(image=self.blank_ctk_image)
             log_session("Stopped preview playback")
@@ -1018,7 +1021,7 @@ class VideoProcessorApp:
             ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(200, 150))
             self.preview_label.configure(image=ctk_img)
             self.preview_image = ctk_img  # Prevent garbage collection
-            time.sleep(1 / self.fps)
+            time.sleep(1 / self.fps if self.fps > 0 else 0.033)
 
     def load_preset(self):
         """Load settings from a preset."""
