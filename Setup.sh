@@ -12,7 +12,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 # Display completion message
-echo "Setup complete. Use start.sh to run the application."
+echo "Setup complete. Use Start.sh to run the application."
 
 # Pause to mimic Windows behavior (press any key to continue)
 read -p "Press Enter to continue..."

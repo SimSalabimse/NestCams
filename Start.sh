@@ -11,4 +11,4 @@ source venv/bin/activate
 
 echo "Started"
 # Run the Python script (assuming movie_7.0.2.pyw is in the current directory)
-python3 movie_8.1.0.pyw
+python3 movie_8.2.0.pyw
