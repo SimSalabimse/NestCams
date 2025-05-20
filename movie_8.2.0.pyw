@@ -28,7 +28,7 @@ except ImportError:
     logging.warning("speedtest module not found. Network stability checks will be limited.")
 
 # Version number
-VERSION = "8.2.1"  # Updated to reflect changes
+VERSION = "8.2.2"  # Updated to reflect changes
 
 # Set up debug logging
 logging.basicConfig(filename='upload_log.txt', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -129,7 +129,7 @@ def check_network_stability():
         log_session(f"Network check failed: {str(e)}")
         return False
 
-def get_selected_indices(input_path, motion_threshold, white_threshold, black_threshold, cancel_event, status_callback=None):
+def get_selected_indices(input_path, motion_threshold, white_threshold, black_threshold, cancel_event, progress_callback=None):
     """Perform motion detection and frame filtering once, returning selected frame indices."""
     logging.info(f"Starting motion detection for {input_path}")
     log_session(f"Starting motion detection for {input_path}")
@@ -143,6 +143,7 @@ def get_selected_indices(input_path, motion_threshold, white_threshold, black_th
     log_session(f"Total frames to process: {total_frames}")
     prev_frame_resized = None
     selected_indices = []
+    start_time = time.time()
     for frame_idx in range(total_frames):
         if cancel_event and cancel_event.is_set():
             cap.release()
@@ -159,10 +160,15 @@ def get_selected_indices(input_path, motion_threshold, white_threshold, black_th
             if motion_score > motion_threshold and not is_white_or_black_frame(frame_resized, white_threshold, black_threshold):
                 selected_indices.append(frame_idx)
         prev_frame_resized = frame_resized
-        if frame_idx % 1000 == 0:
-            logging.info(f"Processed {frame_idx}/{total_frames} frames")
-        if frame_idx % 100 == 0 and status_callback:
-            status_callback(f"Analyzing frame {frame_idx}/{total_frames}")
+        if frame_idx % 100 == 0 and progress_callback:
+            elapsed = time.time() - start_time
+            if elapsed > 0:
+                rate = frame_idx / elapsed
+                remaining = (total_frames - frame_idx) / rate if rate > 0 else 0
+            else:
+                remaining = 0
+            progress = (frame_idx / total_frames) * 100
+            progress_callback(progress, frame_idx, total_frames, remaining)
     cap.release()
     logging.info(f"Motion detection completed for {input_path}, {len(selected_indices)} frames selected")
     log_session(f"Motion detection completed for {input_path}, {len(selected_indices)} frames selected")
@@ -227,7 +233,7 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
                     cv2.imwrite(os.path.join(temp_dir, f"frame_{frame_counter:04d}.jpg"), normalized_frame)
                     frame_counter += 1
                     if progress_callback and frame_counter % 10 == 0:
-                        progress = (frame_counter / len(final_indices)) * 80  # 0-80%
+                        progress = (frame_counter / len(final_indices)) * 100  # Changed to 0-100%
                         elapsed = time.time() - start_time
                         rate = frame_counter / elapsed if elapsed > 0 else 1e-6
                         remaining = (len(final_indices) - frame_counter) / rate if rate > 0 else 0
@@ -260,7 +266,7 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
             logging.info("Creating video with FFmpeg")
             log_session("Creating video with FFmpeg")
             if progress_callback:
-                progress_callback(80, 0, 0, 0)
+                progress_callback(100, frame_counter, len(final_indices), 0)  # FFmpeg is quick
             temp_final_path = f"temp_final_{uuid.uuid4().hex}.mp4"
             cmd = [
                 'ffmpeg', '-framerate', str(new_fps), '-i', os.path.join(temp_dir, 'frame_%04d.jpg'),
@@ -300,7 +306,7 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
 
             os.remove(temp_final_path)
             if progress_callback:
-                progress_callback(100, 0, 0, 0)
+                progress_callback(100, frame_counter, len(final_indices), 0)
             logging.info(f"Video generation completed: {output_path}")
             log_session(f"Video generation completed: {output_path}")
             return None
@@ -721,11 +727,13 @@ class VideoProcessorApp:
                 base, _ = os.path.splitext(input_file)
                 output_files = {}
                 
-                # Perform motion detection once per input file
-                self.queue.put(("status", f"Analyzing motion for {os.path.basename(input_file)}..."))
+                # Motion detection task
+                self.queue.put(("task_start", f"Motion Detection - {os.path.basename(input_file)}", 0))
+                def motion_progress_callback(progress, current, total, remaining):
+                    self.queue.put(("progress", progress, current, total, remaining))
                 selected_indices = get_selected_indices(
                     input_file, self.motion_threshold, self.white_threshold, self.black_threshold, self.cancel_event,
-                    status_callback=lambda status: self.queue.put(("status", status))
+                    progress_callback=motion_progress_callback
                 )
                 if selected_indices is None:
                     self.queue.put(("canceled", "Processing canceled by user"))
