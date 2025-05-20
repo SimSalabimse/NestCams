@@ -28,7 +28,7 @@ except ImportError:
     logging.warning("speedtest module not found. Network stability checks will be limited.")
 
 # Version number
-VERSION = "7.1.4"  # Updated for new features
+VERSION = "8.1.0"  # Updated to match the running script
 
 # Set up debug logging
 logging.basicConfig(filename='upload_log.txt', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -428,7 +428,13 @@ class VideoProcessorApp:
         """Open settings window with preview."""
         self.settings_window = ctk.CTkToplevel(self.root)
         self.settings_window.title("Settings & Preview")
-        self.settings_window.protocol("WM_DELETE_WINDOW", self.on_settings_close)
+        # Safety check for on_settings_close method
+        if hasattr(self, 'on_settings_close'):
+            self.settings_window.protocol("WM_DELETE_WINDOW", self.on_settings_close)
+        else:
+            logging.error("on_settings_close method not found; using default destroy")
+            log_session("Error: on_settings_close method not found; using default destroy")
+            self.settings_window.protocol("WM_DELETE_WINDOW", self.settings_window.destroy)
         log_session("Opened settings and preview window")
         
         settings_frame = ctk.CTkFrame(self.settings_window)
@@ -509,10 +515,10 @@ class VideoProcessorApp:
         # Volume slider
         volume_frame = ctk.CTkFrame(music_settings_frame)
         volume_frame.pack(pady=2)
-        ctk.CTkLabel(volume_frame, text="Music Volume (0.0 - 1.0):").pack(side=tk_LEFT)
+        ctk.CTkLabel(volume_frame, text="Music Volume (0.0 - 1.0):").pack(side=tk.LEFT)
         self.music_volume_slider = ctk.CTkSlider(volume_frame, from_=0.0, to=1.0, number_of_steps=100, command=lambda v: setattr(self, 'music_volume', v))
         self.music_volume_slider.set(self.music_volume)
-        self.music_volume_slider.pack(side=tk_LEFT)
+        self.music_volume_slider.pack(side=tk.LEFT)
         
         preset_frame = ctk.CTkFrame(settings_frame)
         preset_frame.pack(pady=10)
@@ -564,6 +570,14 @@ class VideoProcessorApp:
             self.end_time_entry.pack(side=tk.LEFT)
             self.start_preview_playback()
     
+    def on_settings_close(self):
+        """Handle settings window close."""
+        self.stop_preview_playback()
+        if self.preview_cap:
+            self.preview_cap.release()
+        self.settings_window.destroy()
+        log_session("Closed settings and preview window")
+
     def update_settings(self, value):
         """Update settings from sliders."""
         self.motion_threshold = int(self.motion_slider.get())
@@ -959,6 +973,81 @@ class VideoProcessorApp:
                 break
             finally:
                 self.root.after(0, lambda b=button: b.configure(state="normal", text="Upload to YouTube"))
+
+    # Methods referenced in on_settings_close
+    def start_preview_playback(self):
+        """Start preview playback."""
+        if self.preview_cap and not self.preview_running.is_set():
+            self.preview_running.set()
+            self.play_button.configure(state="disabled")
+            self.stop_button.configure(state="normal")
+            self.playback_thread = threading.Thread(target=self.preview_playback)
+            self.playback_thread.start()
+            log_session("Started preview playback")
+
+    def stop_preview_playback(self):
+        """Stop preview playback."""
+        if self.preview_running.is_set():
+            self.preview_running.clear()
+            if self.playback_thread:
+                self.playback_thread.join()
+            self.play_button.configure(state="normal")
+            self.stop_button.configure(state="disabled")
+            self.preview_label.configure(image=self.blank_ctk_image)
+            log_session("Stopped preview playback")
+
+    def preview_playback(self):
+        """Playback preview video."""
+        if not self.preview_cap or not self.preview_cap.isOpened():
+            return
+        start_time = float(self.start_time_entry.get() or 0)
+        end_time = float(self.end_time_entry.get() or self.total_frames / self.fps)
+        self.preview_cap.set(cv2.CAP_PROP_POS_MSEC, start_time * 1000)
+        
+        while self.preview_running.is_set():
+            current_time = self.preview_cap.get(cv2.CAP_PROP_POS_MSEC) / 1000
+            if current_time >= end_time:
+                self.preview_cap.set(cv2.CAP_PROP_POS_MSEC, start_time * 1000)
+            ret, frame = self.preview_cap.read()
+            if not ret:
+                self.preview_cap.set(cv2.CAP_PROP_POS_MSEC, start_time * 1000)
+                continue
+            frame = cv2.resize(frame, (200, 150))
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(frame_rgb)
+            ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(200, 150))
+            self.preview_label.configure(image=ctk_img)
+            self.preview_image = ctk_img  # Prevent garbage collection
+            time.sleep(1 / self.fps)
+
+    def load_preset(self):
+        """Load settings from a preset."""
+        preset_name = self.preset_combobox.get()
+        if preset_name in self.presets:
+            preset = self.presets[preset_name]
+            self.motion_slider.set(preset.get("motion_threshold", 3000))
+            self.white_slider.set(preset.get("white_threshold", 200))
+            self.black_slider.set(preset.get("black_threshold", 50))
+            self.clip_slider.set(preset.get("clip_limit", 1.0))
+            self.saturation_slider.set(preset.get("saturation_multiplier", 1.1))
+            self.update_settings(0)
+            log_session(f"Loaded preset: {preset_name}")
+
+    def save_preset(self):
+        """Save current settings as a preset."""
+        preset_name = self.preset_name_entry.get()
+        if preset_name:
+            self.presets[preset_name] = {
+                "motion_threshold": int(self.motion_slider.get()),
+                "white_threshold": int(self.white_slider.get()),
+                "black_threshold": int(self.black_slider.get()),
+                "clip_limit": float(self.clip_slider.get()),
+                "saturation_multiplier": float(self.saturation_slider.get())
+            }
+            with open("presets.json", "w") as f:
+                json.dump(self.presets, f)
+            self.preset_combobox.configure(values=list(self.presets.keys()))
+            log_session(f"Saved preset: {preset_name}")
 
 if __name__ == "__main__":
     root = ctk.CTk()
