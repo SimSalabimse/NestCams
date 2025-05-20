@@ -28,7 +28,7 @@ except ImportError:
     logging.warning("speedtest module not found. Network stability checks will be limited.")
 
 # Version number
-VERSION = "8.2.0"  # Updated version to reflect optimization
+VERSION = "8.2.1"  # Updated to reflect changes
 
 # Set up debug logging
 logging.basicConfig(filename='upload_log.txt', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -129,7 +129,7 @@ def check_network_stability():
         log_session(f"Network check failed: {str(e)}")
         return False
 
-def get_selected_indices(input_path, motion_threshold, white_threshold, black_threshold, cancel_event):
+def get_selected_indices(input_path, motion_threshold, white_threshold, black_threshold, cancel_event, status_callback=None):
     """Perform motion detection and frame filtering once, returning selected frame indices."""
     logging.info(f"Starting motion detection for {input_path}")
     log_session(f"Starting motion detection for {input_path}")
@@ -139,6 +139,8 @@ def get_selected_indices(input_path, motion_threshold, white_threshold, black_th
         log_session(f"Error: Cannot open video file: {input_path}")
         return None
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    logging.info(f"Total frames to process: {total_frames}")
+    log_session(f"Total frames to process: {total_frames}")
     prev_frame_resized = None
     selected_indices = []
     for frame_idx in range(total_frames):
@@ -149,6 +151,7 @@ def get_selected_indices(input_path, motion_threshold, white_threshold, black_th
             return None
         ret, frame = cap.read()
         if not ret:
+            logging.warning(f"Failed to read frame {frame_idx} from {input_path}")
             break
         frame_resized = cv2.resize(frame, (640, 360))
         if prev_frame_resized is not None:
@@ -156,6 +159,10 @@ def get_selected_indices(input_path, motion_threshold, white_threshold, black_th
             if motion_score > motion_threshold and not is_white_or_black_frame(frame_resized, white_threshold, black_threshold):
                 selected_indices.append(frame_idx)
         prev_frame_resized = frame_resized
+        if frame_idx % 1000 == 0:
+            logging.info(f"Processed {frame_idx}/{total_frames} frames")
+        if frame_idx % 100 == 0 and status_callback:
+            status_callback(f"Analyzing frame {frame_idx}/{total_frames}")
     cap.release()
     logging.info(f"Motion detection completed for {input_path}, {len(selected_indices)} frames selected")
     log_session(f"Motion detection completed for {input_path}, {len(selected_indices)} frames selected")
@@ -715,8 +722,10 @@ class VideoProcessorApp:
                 output_files = {}
                 
                 # Perform motion detection once per input file
+                self.queue.put(("status", f"Analyzing motion for {os.path.basename(input_file)}..."))
                 selected_indices = get_selected_indices(
-                    input_file, self.motion_threshold, self.white_threshold, self.black_threshold, self.cancel_event
+                    input_file, self.motion_threshold, self.white_threshold, self.black_threshold, self.cancel_event,
+                    status_callback=lambda status: self.queue.put(("status", status))
                 )
                 if selected_indices is None:
                     self.queue.put(("canceled", "Processing canceled by user"))
