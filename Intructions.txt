@@ -5,3 +5,14 @@ Manual install:
 Manual run:
     .\venv\Scripts\activate
     pythonw movie_*.pyw
+
+
+Linux
+nano ./Start.sh
+    Change the path to the filepath to your filepath
+
+chmod +x Setup.sh
+./Setup.sh
+
+chmod +x Start.sh
+./Start.sh
