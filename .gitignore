@@ -1,3 +1,6 @@
-\venv
-\settings.json
-\presets.json
+venv/
+log/
+settings.json
+presets.json
+token.pickle
+client_secrets.json

@@ -1,10 +1,9 @@
 @echo off
 echo Updating repository...
-cd D:\Sander\Videos\DayRecordings2025\NestCams
+cd /d "%~dp0"
 git pull
 
 echo Starting...
-call D:\Sander\Videos\DayRecordings2025\NestCams\venv\Scripts\activate
+call venv\Scripts\activate
 echo Started
-python D:\Sander\Videos\DayRecordings2025\NestCams\movie_7.0.2.pyw
-
+python movie_8.2.2.pyw

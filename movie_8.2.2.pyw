@@ -30,11 +30,15 @@ except ImportError:
 # Version number
 VERSION = "8.2.2"  # Updated to reflect changes
 
+# Create log directory
+log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log")
+os.makedirs(log_dir, exist_ok=True)
+
 # Set up debug logging
-logging.basicConfig(filename='upload_log.txt', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(filename=os.path.join(log_dir, 'upload_log.txt'), level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Set up session logging
-session_log_file = f"session_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+session_log_file = os.path.join(log_dir, f"session_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
 session_logger = logging.getLogger('session')
 session_handler = logging.FileHandler(session_log_file)
 session_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
