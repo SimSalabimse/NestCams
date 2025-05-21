@@ -1,41 +1,37 @@
-name: Update Start Scripts
+name: Update Version Files
 
 on:
   release:
     types: [published]
 
 jobs:
-  update-scripts:
+  update-version:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version from release tag
-        id: get_version
-        run: |
-          TAG=${GITHUB_REF#refs/tags/}
-          VERSION=${TAG#v}  # Remove 'v' prefix if present
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-        shell: bash
-
-      - name: Update Start.sh
-        run: |
-          sed -i "s/python movie_[0-9.]*\.pyw/python movie_${VERSION}.pyw/" Start.sh
-        shell: bash
-
-      - name: Update Start.bat
-        run: |
-          sed -i "s/python movie_[0-9.]*\.pyw/python movie_${VERSION}.pyw/" Start.bat
-        shell: bash
-
-      - name: Commit and push changes
+      - name: Set up Git
         run: |
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
-          git add Start.sh Start.bat
-          git commit -m "Update start scripts to version ${{ env.VERSION }}"
+
+      - name: Extract version from tag
+        id: extract_version
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Update version file
+        run: |
+          if echo "${{ env.VERSION }}" | grep -q "_beta"; then
+            echo "${{ env.VERSION }}" > beta_version.txt
+          else
+            echo "${{ env.VERSION }}" > stable_version.txt
+          fi
+
+      - name: Commit and push changes
+        run: |
+          git add *_version.txt
+          git commit -m "Update version file for ${{ env.VERSION }}" || echo "No changes to commit"
           git push
-        shell: bash
