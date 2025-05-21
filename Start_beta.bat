@@ -6,5 +6,5 @@ git pull
 echo Starting...
 call venv\Scripts\activate
 echo Started
-python movie_9.0.0_beta.pyw
+python movie_9.0.1_beta.pyw
 pause
