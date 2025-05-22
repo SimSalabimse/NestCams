@@ -502,7 +502,7 @@ class VideoProcessorApp:
             current_version = version.parse(VERSION)
             latest_version = version.parse(latest_version_str)
             if latest_version > current_version:
-                messagebox.showinfo("Update Available", f"Version {latest_version_str} is available for {channel} channel! Please update via GitHub.")
+                messagebox.showinfo("Update Available", f"Version {latest_version_str} is available for {channel} channel! Please restart to update.")
                 log_session(f"Update available for {channel}: {latest_version_str}")
         except requests.RequestException as e:
             logging.error(f"Update check failed: {e}")
