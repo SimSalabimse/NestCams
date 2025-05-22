@@ -33,7 +33,6 @@ except ImportError:
 
 # Version number
 VERSION = "9.0.2_beta"
-
 UPDATE_CHANNELS = ["Stable", "Beta"]
 
 # Create log directory
@@ -50,8 +49,6 @@ session_logger.addHandler(session_handler)
 session_logger.setLevel(logging.INFO)
 
 thread_lock = threading.Lock()
-
-# Global cancel event for multiprocessing
 cancel_event = Event()
 
 ### Helper Functions
@@ -145,8 +142,7 @@ def get_selected_indices(input_path, motion_threshold, white_threshold, black_th
     logging.info(f"Total frames to process: {total_frames}")
     log_session(f"Total frames to process: {total_frames}")
     
-    # Optimize for large videos by skipping frames
-    frame_skip = max(1, total_frames // 100000)  # Process ~10,000 frames max
+    frame_skip = max(1, total_frames // 100000)
     logging.info(f"Frame skip factor: {frame_skip}")
     log_session(f"Frame skip factor: {frame_skip}")
     
@@ -162,7 +158,6 @@ def get_selected_indices(input_path, motion_threshold, white_threshold, black_th
             log_session("Motion detection canceled by user")
             return None
         
-        # Set position and read frame
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = cap.read()
         if not ret:
@@ -181,7 +176,6 @@ def get_selected_indices(input_path, motion_threshold, white_threshold, black_th
         prev_frame_resized = frame_resized
         frame_idx += frame_skip
         
-        # Update progress every 100 frames or at least 1% progress
         if frame_idx % max(100, total_frames // 100) == 0 and progress_callback:
             elapsed = time.time() - start_time
             progress = (frame_idx / total_frames) * 100
@@ -191,7 +185,6 @@ def get_selected_indices(input_path, motion_threshold, white_threshold, black_th
             log_session(f"Processed {frame_idx}/{total_frames} frames")
             progress_callback(progress, frame_idx, total_frames, remaining)
     
-    # Final progress update
     if progress_callback:
         progress_callback(100, frame_idx, total_frames, 0)
     
@@ -914,3 +907,120 @@ class VideoProcessorApp:
                     output_file = f"{base}_{task_name.split()[1]}.{output_format}"
                     if self.output_dir:
                         output_file = os.path.join(self.output_dir, os.path.basename(output_file))
+                    self.queue.put(("task_start", f"{task_name} - {os.path.basename(input_file)}", task_count / total_tasks * 100))
+                    task_count += 1
+
+                    def progress_callback(progress, current, total, remaining):
+                        logging.info(f"Progress: {progress:.2f}%, {current}/{total}, remaining: {remaining:.2f}s")
+                        with thread_lock:
+                            self.queue.put(("progress", progress, current, total, remaining))
+
+                    def status_callback(status):
+                        logging.info(f"Status update: {status}")
+                        self.queue.put(("status", status))
+
+                    error = generate_output_video(
+                        input_file, output_file, duration, selected_indices,
+                        clip_limit=self.clip_limit,
+                        saturation_multiplier=self.saturation_multiplier,
+                        output_format=output_format,
+                        progress_callback=progress_callback,
+                        music_paths=self.music_paths,
+                        music_volume=self.music_volume,
+                        status_callback=status_callback,
+                        custom_ffmpeg_args=self.custom_ffmpeg_args,
+                        watermark_text=self.watermark_text
+                    )
+                    if error:
+                        self.queue.put(("canceled", error))
+                        has_error = True
+                        break
+                    else:
+                        output_files[task_name] = output_file
+                if not has_error:
+                    self.queue.put(("complete", output_files, time.time() - self.start_time))
+            logging.info("process_video_thread finished")
+            log_session("Processing thread finished")
+        except Exception as e:
+            logging.error(f"Error in process_video_thread: {str(e)}", exc_info=True)
+            log_session(f"Error in processing thread: {str(e)}")
+            self.queue.put(("canceled", str(e)))
+
+    def process_queue(self):
+        try:
+            while not self.queue.empty():
+                message = self.queue.get_nowait()
+                msg_type, *args = message
+                if msg_type == "task_start":
+                    task, percentage = args
+                    self.current_task_label.configure(text=f"Current Task: {task}")
+                    self.progress.set(percentage / 100)
+                elif msg_type == "progress":
+                    progress, current, total, remaining = args
+                    self.progress.set(progress / 100)
+                    self.time_label.configure(text=f"Estimated Time Remaining: {remaining:.2f}s")
+                elif msg_type == "status":
+                    status = args[0]
+                    self.current_task_label.configure(text=f"Current Task: {status}")
+                elif msg_type == "complete":
+                    output_files, elapsed = args
+                    for task_name, file_path in output_files.items():
+                        ctk.CTkLabel(self.output_frame, text=f"{task_name}: {file_path}").pack(pady=2)
+                    self.progress.set(1.0)
+                    self.time_label.configure(text=f"Completed in {elapsed:.2f}s")
+                    self.reset_ui()
+                elif msg_type == "canceled":
+                    reason = args[0]
+                    ctk.CTkLabel(self.output_frame, text=f"Processing canceled: {reason}").pack(pady=2)
+                    self.progress.set(0)
+                    self.time_label.configure(text="Estimated Time Remaining: N/A")
+                    self.reset_ui()
+        except queue.Empty:
+            pass
+        self.root.after(50, self.process_queue)
+
+    def reset_ui(self):
+        self.switch_60s.configure(state="normal")
+        self.switch_12min.configure(state="normal")
+        self.switch_1h.configure(state="normal")
+        self.browse_button.configure(state="normal")
+        self.start_button.configure(state="normal" if self.input_files else "disabled")
+        self.cancel_button.configure(state="disabled")
+        self.current_task_label.configure(text="Current Task: N/A")
+
+    def cancel_processing(self):
+        global cancel_event
+        cancel_event.set()
+        log_session("User canceled processing")
+
+    def load_preset(self):
+        preset_name = self.preset_combobox.get()
+        if preset_name in self.presets:
+            preset = self.presets[preset_name]
+            self.motion_slider.set(preset.get("motion_threshold", 3000))
+            self.white_slider.set(preset.get("white_threshold", 200))
+            self.black_slider.set(preset.get("black_threshold", 50))
+            self.clip_slider.set(preset.get("clip_limit", 1.0))
+            self.saturation_slider.set(preset.get("saturation_multiplier", 1.1))
+            self.update_settings(0)
+            log_session(f"Loaded preset: {preset_name}")
+
+    def save_preset(self):
+        preset_name = self.preset_name_entry.get()
+        if preset_name:
+            self.presets[preset_name] = {
+                "motion_threshold": int(self.motion_slider.get()),
+                "white_threshold": int(self.white_slider.get()),
+                "black_threshold": int(self.black_slider.get()),
+                "clip_limit": float(self.clip_slider.get()),
+                "saturation_multiplier": float(self.saturation_slider.get())
+            }
+            with open("presets.json", "w") as f:
+                json.dump(self.presets, f)
+            self.preset_combobox.configure(values=list(self.presets.keys()))
+            log_session(f"Saved preset: {preset_name}")
+
+if __name__ == "__main__":
+    root = ctk.CTk()
+    app = VideoProcessorApp(root)
+    root.mainloop()
