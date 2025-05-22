@@ -21,7 +21,7 @@ import requests
 from datetime import datetime
 import tempfile
 import schedule
-from multiprocessing import Pool, Event  # Updated to include Event
+from multiprocessing import Pool, Event
 from packaging import version
 import functools
 
@@ -34,7 +34,6 @@ except ImportError:
 # Version number
 VERSION = "9.0.1_beta"
 
-# Update channels (lowercase for consistency)
 UPDATE_CHANNELS = ["Stable", "Beta"]
 
 # Create log directory
@@ -51,6 +50,9 @@ session_logger.addHandler(session_handler)
 session_logger.setLevel(logging.INFO)
 
 thread_lock = threading.Lock()
+
+# Global cancel event for multiprocessing
+cancel_event = Event()
 
 ### Helper Functions
 
@@ -129,7 +131,8 @@ def check_network_stability():
         log_session(f"Network check failed: {str(e)}")
         return False
 
-def get_selected_indices(input_path, motion_threshold, white_threshold, black_threshold, cancel_event, progress_callback=None):
+def get_selected_indices(input_path, motion_threshold, white_threshold, black_threshold, progress_callback=None):
+    global cancel_event
     logging.info(f"Starting motion detection for {input_path}")
     log_session(f"Starting motion detection for {input_path}")
     cap = cv2.VideoCapture(input_path)
@@ -170,8 +173,8 @@ def get_selected_indices(input_path, motion_threshold, white_threshold, black_th
     log_session(f"Motion detection completed for {input_path}, {len(selected_indices)} frames selected")
     return selected_indices
 
-# Process_frame at module level
-def process_frame(input_path, clip_limit, saturation_multiplier, rotate, temp_dir, cancel_event, task):
+def process_frame(input_path, clip_limit, saturation_multiplier, rotate, temp_dir, task):
+    global cancel_event
     frame_idx, order = task
     if cancel_event.is_set():
         return None
@@ -191,7 +194,7 @@ def process_frame(input_path, clip_limit, saturation_multiplier, rotate, temp_di
     return order
 
 def generate_output_video(input_path, output_path, desired_duration, selected_indices, clip_limit=1.0, saturation_multiplier=1.1, 
-                          output_format='mp4', progress_callback=None, cancel_event=None, music_paths=None, music_volume=1.0, 
+                          output_format='mp4', progress_callback=None, music_paths=None, music_volume=1.0, 
                           status_callback=None, custom_ffmpeg_args=None, watermark_text=None):
     try:
         logging.info(f"Generating video: {output_path}")
@@ -236,8 +239,7 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
                     clip_limit,
                     saturation_multiplier,
                     rotate,
-                    temp_dir,
-                    cancel_event
+                    temp_dir
                 )
                 results = pool.map(partial_process_frame, frame_tasks)
                 frame_counter = len([r for r in results if r is not None])
@@ -319,7 +321,6 @@ class VideoProcessorApp:
         log_session("Application started")
         self.root.resizable(True, True)
 
-        # Theme (lowercase for CustomTkinter compatibility)
         self.theme_var = tk.StringVar(value="dark")
         theme_frame = ctk.CTkFrame(root)
         theme_frame.pack(pady=5)
@@ -376,7 +377,6 @@ class VideoProcessorApp:
         self.output_frame.pack(pady=5, fill='both', expand=True)
 
         self.input_files = []
-        self.cancel_event = Event()  # Updated to multiprocessing.Event
         self.queue = queue.Queue()
         self.start_time = None
         self.preview_image = None
@@ -394,7 +394,7 @@ class VideoProcessorApp:
         self.custom_ffmpeg_args = None
         self.watermark_text = None
         self.preview_running = threading.Event()
-        self.update_channel = "Stable"
+        self.update_channel = "stable"
 
         self.music_paths = {"default": None, 60: None, 720: None, 3600: None}
         self.load_settings()
@@ -414,7 +414,7 @@ class VideoProcessorApp:
                 self.output_dir = settings.get("output_dir", None)
                 self.custom_ffmpeg_args = settings.get("custom_ffmpeg_args", None)
                 self.watermark_text = settings.get("watermark_text", None)
-                self.update_channel = settings.get("update_channel", "Stable")
+                self.update_channel = settings.get("update_channel", "stable")
                 loaded_music_paths = settings.get("music_paths", {})
                 for key in self.music_paths:
                     if str(key) in loaded_music_paths:
@@ -431,7 +431,6 @@ class VideoProcessorApp:
         self.clip_limit = float(self.clip_slider.get())
         self.saturation_multiplier = float(self.saturation_slider.get())
         self.music_volume = self.music_volume_slider.get()
-        self.customM
         self.custom_ffmpeg_args = self.ffmpeg_entry.get().split() if self.ffmpeg_entry.get() else None
         self.watermark_text = self.watermark_entry.get() or None
         self.update_channel = self.update_channel_var.get()
@@ -479,7 +478,7 @@ class VideoProcessorApp:
             log_session(f"Update check failed: {e}")
 
     def toggle_theme(self, theme):
-        ctk.set_appearance_mode(theme.lower())  # Ensure lowercase
+        ctk.set_appearance_mode(theme.lower())
         log_session(f"Theme changed to {theme}")
 
     def open_settings(self):
@@ -742,7 +741,7 @@ class VideoProcessorApp:
         self.output_dir_label.configure(text="Default")
         self.ffmpeg_entry.delete(0, tk.END)
         self.watermark_entry.delete(0, tk.END)
-        self.update_channel_var.set("Stable")
+        self.update_channel_var.set("stable")
         self.update_settings(0)
         log_session("Reset settings to default values")
 
@@ -756,6 +755,7 @@ class VideoProcessorApp:
             log_session("No files selected")
 
     def start_processing(self):
+        global cancel_event
         logging.info("start_processing called")
         log_session("Starting video processing")
         if not self.input_files:
@@ -776,12 +776,13 @@ class VideoProcessorApp:
         self.browse_button.configure(state="disabled")
         self.start_button.configure(state="disabled")
         self.cancel_button.configure(state="normal")
-        self.cancel_event.clear()
+        cancel_event.clear()
         self.start_time = time.time()
         threading.Thread(target=self.process_video_thread).start()
         log_session("Started processing thread")
 
     def process_video_thread(self):
+        global cancel_event
         try:
             logging.info("process_video_thread started")
             log_session("Processing thread started")
@@ -809,7 +810,7 @@ class VideoProcessorApp:
                     self.queue.put(("progress", progress, current, total, remaining))
 
                 selected_indices = get_selected_indices(
-                    input_file, self.motion_threshold, self.white_threshold, self.black_threshold, self.cancel_event,
+                    input_file, self.motion_threshold, self.white_threshold, self.black_threshold,
                     progress_callback=motion_progress_callback
                 )
                 if selected_indices is None:
@@ -824,7 +825,7 @@ class VideoProcessorApp:
                     continue
 
                 for task_name, duration in selected_videos:
-                    if self.cancel_event.is_set():
+                    if cancel_event.is_set():
                         self.queue.put(("canceled", "User Cancellation"))
                         has_error = True
                         break
@@ -849,7 +850,6 @@ class VideoProcessorApp:
                         saturation_multiplier=self.saturation_multiplier,
                         output_format=output_format,
                         progress_callback=progress_callback,
-                        cancel_event=self.cancel_event,
                         music_paths=self.music_paths,
                         music_volume=self.music_volume,
                         status_callback=status_callback,
@@ -872,7 +872,8 @@ class VideoProcessorApp:
             self.queue.put(("canceled", str(e)))
 
     def cancel_processing(self):
-        self.cancel_event.set()
+        global cancel_event
+        cancel_event.set()
         logging.info("Cancel requested")
         log_session("Cancel processing requested")
 
