@@ -1,11 +1,11 @@
-name: Update Version File on Commit
+name: Update Scripts and Version Files on Commit
 
 on:
   push:
     branches: [main]
 
 jobs:
-  update-version:
+  update-scripts:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -16,18 +16,35 @@ jobs:
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
 
-      - name: Extract version from commit
-        id: extract_version
+      - name: Find latest stable version
+        id: stable_version
         run: |
-          VERSION=$(git rev-parse --short HEAD)
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          STABLE_FILES=$(git ls-files 'movie_*.pyw' | grep -v '_beta')
+          LATEST_STABLE=$(echo "$STABLE_FILES" | sed 's/movie_\(.*\)\.pyw/\1/' | sort -V | tail -n 1)
+          echo "LATEST_STABLE=$LATEST_STABLE" >> $GITHUB_ENV
+          echo "LATEST_STABLE_FILE=movie_${LATEST_STABLE}.pyw" >> $GITHUB_ENV
 
-      - name: Update version file
+      - name: Find latest beta version
+        id: beta_version
         run: |
-          echo "${{ env.VERSION }}" > current_version.txt
+          BETA_FILES=$(git ls-files 'movie_*_beta.pyw')
+          LATEST_BETA=$(echo "$BETA_FILES" | sed 's/movie_\(.*\)_beta\.pyw/\1/' | sort -V | tail -n 1)
+          echo "LATEST_BETA=$LATEST_BETA" >> $GITHUB_ENV
+          echo "LATEST_BETA_FILE=movie_${LATEST_BETA}_beta.pyw" >> $GITHUB_ENV
+
+      - name: Update version files
+        run: |
+          echo "${{ env.LATEST_STABLE }}" > stable_version.txt
+          echo "${{ env.LATEST_BETA }}" > beta_version.txt
+
+      - name: Update scripts
+        run: |
+          echo "python ${{ env.LATEST_STABLE_FILE }}" > Start.bat
+          echo "python3 ${{ env.LATEST_STABLE_FILE }}" > Start.sh
+          echo "python ${{ env.LATEST_BETA_FILE }}" > Start_beta.bat
 
       - name: Commit and push changes
         run: |
-          git add current_version.txt
-          git commit -m "Update version file for commit ${{ env.VERSION }}" || echo "No changes to commit"
+          git add stable_version.txt beta_version.txt Start.bat Start.sh Start_beta.bat
+          git commit -m "Update version files and scripts for latest stable ${{ env.LATEST_STABLE }} and beta ${{ env.LATEST_BETA }}" || echo "No changes to commit"
           git push
