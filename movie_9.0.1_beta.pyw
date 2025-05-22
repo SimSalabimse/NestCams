@@ -21,7 +21,8 @@ import requests
 from datetime import datetime
 import tempfile
 import schedule
-from multiprocessing import Pool
+from multiprocessing import Pool, Event
+from functools import partial
 from packaging import version
 
 try:
@@ -31,7 +32,7 @@ except ImportError:
     logging.warning("speedtest module not found. Network stability checks will be limited.")
 
 # Version number
-VERSION = "9.0.0_beta"
+VERSION = "9.0.1_beta"
 
 # Update channels
 UPDATE_CHANNELS = ["stable", "beta"]
@@ -169,6 +170,25 @@ def get_selected_indices(input_path, motion_threshold, white_threshold, black_th
     log_session(f"Motion detection completed for {input_path}, {len(selected_indices)} frames selected")
     return selected_indices
 
+def process_frame(input_path, clip_limit, saturation_multiplier, rotate, temp_dir, cancel_event, task):
+    frame_idx, order = task
+    if cancel_event.is_set():
+        return None
+    cap = cv2.VideoCapture(input_path)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+    ret, frame = cap.read()
+    cap.release()
+    if not ret:
+        return None
+    normalized_frame = normalize_frame(frame, clip_limit, saturation_multiplier)
+    if normalized_frame is None:
+        return None
+    if rotate:
+        normalized_frame = cv2.rotate(normalized_frame, cv2.ROTATE_90_CLOCKWISE)
+    temp_path = os.path.join(temp_dir, f"frame_{order:04d}.jpg")
+    cv2.imwrite(temp_path, normalized_frame)
+    return order
+
 def generate_output_video(input_path, output_path, desired_duration, selected_indices, clip_limit=1.0, saturation_multiplier=1.1, 
                           output_format='mp4', progress_callback=None, cancel_event=None, music_paths=None, music_volume=1.0, 
                           status_callback=None, custom_ffmpeg_args=None, watermark_text=None):
@@ -209,26 +229,8 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
             log_session("Saving processed frames")
             frame_tasks = [(idx, i) for i, idx in enumerate(final_indices)]
             with Pool() as pool:
-                def process_frame(task):
-                    frame_idx, order = task
-                    if cancel_event and cancel_event.is_set():
-                        return None
-                    cap = cv2.VideoCapture(input_path)
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                    ret, frame = cap.read()
-                    cap.release()
-                    if not ret:
-                        return None
-                    normalized_frame = normalize_frame(frame, clip_limit, saturation_multiplier)
-                    if normalized_frame is None:
-                        return None
-                    if rotate:
-                        normalized_frame = cv2.rotate(normalized_frame, cv2.ROTATE_90_CLOCKWISE)
-                    temp_path = os.path.join(temp_dir, f"frame_{order:04d}.jpg")
-                    cv2.imwrite(temp_path, normalized_frame)
-                    return order
-
-                results = pool.map(process_frame, frame_tasks)
+                partial_process_frame = partial(process_frame, input_path, clip_limit, saturation_multiplier, rotate, temp_dir, cancel_event)
+                results = pool.map(partial_process_frame, frame_tasks)
                 frame_counter = len([r for r in results if r is not None])
             logging.info(f"Saved {frame_counter} frames to temporary directory")
             log_session(f"Saved {frame_counter} frames to temporary directory")
@@ -306,7 +308,7 @@ class VideoProcessorApp:
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("dark-blue")
         log_session("Application started")
-        self.root.resizable(True, True)  # Make main window resizable
+        self.root.resizable(True, True)
 
         self.theme_var = tk.StringVar(value="Dark")
         theme_frame = ctk.CTkFrame(root)
@@ -360,11 +362,11 @@ class VideoProcessorApp:
         self.output_label = ctk.CTkLabel(root, text="Output Files:")
         self.output_label.pack(pady=10)
 
-        self.output_frame = ctk.CTkScrollableFrame(root)  # Use scrollable frame for output
+        self.output_frame = ctk.CTkScrollableFrame(root)
         self.output_frame.pack(pady=5, fill='both', expand=True)
 
         self.input_files = []
-        self.cancel_event = threading.Event()
+        self.cancel_event = Event()  # Changed to multiprocessing.Event
         self.queue = queue.Queue()
         self.start_time = None
         self.preview_image = None
@@ -382,7 +384,7 @@ class VideoProcessorApp:
         self.custom_ffmpeg_args = None
         self.watermark_text = None
         self.preview_running = threading.Event()
-        self.update_channel = "stable"  # Default update channel
+        self.update_channel = "stable"
 
         self.music_paths = {"default": None, 60: None, 720: None, 3600: None}
         self.load_settings()
@@ -473,12 +475,12 @@ class VideoProcessorApp:
         self.settings_window = ctk.CTkToplevel(self.root)
         self.settings_window.title("Settings & Preview")
         self.settings_window.protocol("WM_DELETE_WINDOW", self.on_settings_close)
-        self.settings_window.resizable(True, True)  # Make settings window resizable
-        self.settings_window.lift()  # Bring to front
-        self.settings_window.transient(self.root)  # Tie to main window
+        self.settings_window.resizable(True, True)
+        self.settings_window.lift()
+        self.settings_window.transient(self.root)
         log_session("Opened settings and preview window")
 
-        settings_frame = ctk.CTkScrollableFrame(self.settings_window)  # Use scrollable frame
+        settings_frame = ctk.CTkScrollableFrame(self.settings_window)
         settings_frame.pack(side=tk.LEFT, padx=10, pady=10, fill='both', expand=True)
 
         ctk.CTkLabel(settings_frame, text="Motion Sensitivity").pack(pady=5)
@@ -492,7 +494,7 @@ class VideoProcessorApp:
         self.white_slider = ctk.CTkSlider(settings_frame, from_=100, to=255, number_of_steps=155, command=self.update_settings)
         self.white_slider.set(self.white_threshold)
         self.white_slider.pack(pady=2)
-        self.white_value_label = ctk.CTkLabel(settings_frame, text=f"White: {self.white_threshold}")
+        self.white_value_label = ctk.CTkLabel(settings_frame, titer_update_settings)
         self.white_value_label.pack(pady=2)
 
         ctk.CTkLabel(settings_frame, text="Black Threshold").pack(pady=2)
