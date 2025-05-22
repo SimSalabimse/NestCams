@@ -31,10 +31,10 @@ except ImportError:
     logging.warning("speedtest module not found. Network stability checks will be limited.")
 
 # Version number
-VERSION = "9.0.0_beta"
+VERSION = "9.0.1_beta"
 
 # Update channels
-UPDATE_CHANNELS = ["stable", "beta"]
+UPDATE_CHANNELS = ["Stable", "Beta"]
 
 # Create log directory
 log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log")
