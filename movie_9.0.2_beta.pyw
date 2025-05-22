@@ -140,34 +140,61 @@ def get_selected_indices(input_path, motion_threshold, white_threshold, black_th
         logging.error(f"Cannot open video file: {input_path}")
         log_session(f"Error: Cannot open video file: {input_path}")
         return None
+    
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     logging.info(f"Total frames to process: {total_frames}")
     log_session(f"Total frames to process: {total_frames}")
+    
+    # Optimize for large videos by skipping frames
+    frame_skip = max(1, total_frames // 100000)  # Process ~10,000 frames max
+    logging.info(f"Frame skip factor: {frame_skip}")
+    log_session(f"Frame skip factor: {frame_skip}")
+    
     prev_frame_resized = None
     selected_indices = []
     start_time = time.time()
-    for frame_idx in range(total_frames):
+    
+    frame_idx = 0
+    while frame_idx < total_frames:
         if cancel_event.is_set():
             cap.release()
             logging.info("Motion detection canceled by user")
             log_session("Motion detection canceled by user")
             return None
+        
+        # Set position and read frame
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = cap.read()
         if not ret:
             logging.warning(f"Failed to read frame {frame_idx} from {input_path}")
-            break
+            log_session(f"Warning: Failed to read frame {frame_idx}")
+            frame_idx += frame_skip
+            continue
+        
         frame_resized = cv2.resize(frame, (640, 360))
         if prev_frame_resized is not None:
             motion_score = compute_motion_score(prev_frame_resized, frame_resized)
+            logging.debug(f"Frame {frame_idx}: Motion score = {motion_score}")
             if motion_score > motion_threshold and not is_white_or_black_frame(frame_resized, white_threshold, black_threshold):
                 selected_indices.append(frame_idx)
+        
         prev_frame_resized = frame_resized
-        if frame_idx % 100 == 0 and progress_callback:
+        frame_idx += frame_skip
+        
+        # Update progress every 100 frames or at least 1% progress
+        if frame_idx % max(100, total_frames // 100) == 0 and progress_callback:
             elapsed = time.time() - start_time
+            progress = (frame_idx / total_frames) * 100
             rate = frame_idx / elapsed if elapsed > 0 else 0
             remaining = (total_frames - frame_idx) / rate if rate > 0 else 0
-            progress = (frame_idx / total_frames) * 100
+            logging.info(f"Processed {frame_idx}/{total_frames} frames ({progress:.2f}%)")
+            log_session(f"Processed {frame_idx}/{total_frames} frames")
             progress_callback(progress, frame_idx, total_frames, remaining)
+    
+    # Final progress update
+    if progress_callback:
+        progress_callback(100, frame_idx, total_frames, 0)
+    
     cap.release()
     logging.info(f"Motion detection completed for {input_path}, {len(selected_indices)} frames selected")
     log_session(f"Motion detection completed for {input_path}, {len(selected_indices)} frames selected")
@@ -320,7 +347,7 @@ class VideoProcessorApp:
         ctk.set_default_color_theme("dark-blue")
         log_session("Application started")
         self.root.resizable(True, True)
-        self.root.geometry("800x600")  # Set initial size for main window
+        self.root.geometry("800x600")
 
         self.theme_var = tk.StringVar(value="dark")
         theme_frame = ctk.CTkFrame(root)
@@ -489,7 +516,7 @@ class VideoProcessorApp:
         self.settings_window.resizable(True, True)
         self.settings_window.lift()
         self.settings_window.transient(self.root)
-        self.settings_window.geometry("800x600")  # Set initial size for settings window
+        self.settings_window.geometry("800x600")
         log_session("Opened settings and preview window")
 
         settings_frame = ctk.CTkScrollableFrame(self.settings_window)
@@ -886,263 +913,4 @@ class VideoProcessorApp:
                         break
                     output_file = f"{base}_{task_name.split()[1]}.{output_format}"
                     if self.output_dir:
-                        output_file = os.path.join(self.output_dir, os.path.basename(output_file))
-                    self.queue.put(("task_start", f"{task_name} - {os.path.basename(input_file)}", task_count / total_tasks * 100))
-                    task_count += 1
-
-                    def progress_callback(progress, current, total, remaining):
-                        logging.info(f"Progress: {progress:.2f}%, {current}/{total}, remaining: {remaining:.2f}s")
-                        with thread_lock:
-                            self.queue.put(("progress", progress, current, total, remaining))
-
-                    def status_callback(status):
-                        logging.info(f"Status update: {status}")
-                        self.queue.put(("status", status))
-
-                    error = generate_output_video(
-                        input_file, output_file, duration, selected_indices,
-                        clip_limit=self.clip_limit,
-                        saturation_multiplier=self.saturation_multiplier,
-                        output_format=output_format,
-                        progress_callback=progress_callback,
-                        music_paths=self.music_paths,
-                        music_volume=self.music_volume,
-                        status_callback=status_callback,
-                        custom_ffmpeg_args=self.custom_ffmpeg_args,
-                        watermark_text=self.watermark_text
-                    )
-                    if error:
-                        self.queue.put(("canceled", error))
-                        has_error = True
-                        break
-                    else:
-                        output_files[task_name] = output_file
-                if not has_error:
-                    self.queue.put(("complete", output_files, time.time() - self.start_time))
-            logging.info("process_video_thread finished")
-            log_session("Processing thread finished")
-        except Exception as e:
-            logging.error(f"Error in process_video_thread: {str(e)}", exc_info=True)
-            log_session(f"Error in processing thread: {str(e)}")
-            self.queue.put(("canceled", str(e)))
-
-    def cancel_processing(self):
-        global cancel_event
-        cancel_event.set()
-        logging.info("Cancel requested")
-        log_session("Cancel processing requested")
-
-    def process_queue(self):
-        try:
-            while True:
-                message = self.queue.get_nowait()
-                self.handle_message(message)
-        except queue.Empty:
-            pass
-        self.root.after(50, self.process_queue)
-
-    def handle_message(self, message):
-        msg_type, *args = message
-        if msg_type == "task_start":
-            task_name, progress = args
-            self.current_task_label.configure(text=f"Current Task: {task_name}")
-            self.progress.set(progress / 100)
-            self.time_label.configure(text="Estimating time...")
-            logging.info(f"Task started: {task_name}")
-            log_session(f"UI Update: Task started: {task_name}")
-        elif msg_type == "progress":
-            progress_value, current, total, remaining = args
-            progress_value = min(max(progress_value, 0), 100)
-            self.progress.set(progress_value / 100)
-            remaining_min = remaining / 60 if remaining > 0 else 0
-            self.time_label.configure(text=f"Est. Time Remaining: {remaining_min:.2f} min ({progress_value:.2f}% complete)")
-            log_session(f"UI Update: Progress {progress_value:.2f}%, Est. Time Remaining: {remaining_min:.2f} min")
-        elif msg_type == "status":
-            status_text = args[0]
-            self.current_task_label.configure(text=status_text)
-            log_session(f"UI Update: Status: {status_text}")
-        elif msg_type == "upload_progress":
-            progress_value = args[0]
-            self.progress.set(progress_value / 100)
-            self.time_label.configure(text=f"Uploading: {progress_value:.2f}%")
-            log_session(f"UI Update: Upload progress {progress_value:.2f}%")
-        elif msg_type == "complete":
-            output_files, elapsed = args
-            minutes = int(elapsed // 60)
-            seconds = int(elapsed % 60)
-            time_str = f"{minutes} min {seconds} sec"
-            for widget in self.output_frame.winfo_children():
-                widget.destroy()
-            for task, file in output_files.items():
-                file_frame = ctk.CTkFrame(self.output_frame)
-                file_frame.pack(fill='x', pady=2)
-                label = ctk.CTkLabel(file_frame, text=f"{task}: {file}")
-                label.pack(side=tk.LEFT, padx=5)
-                upload_button = ctk.CTkButton(file_frame, text="Upload to YouTube")
-                upload_button.configure(command=lambda f=file, t=task, b=upload_button: self.start_upload(f, t, b))
-                upload_button.pack(side=tk.RIGHT, padx=5)
-            self.current_task_label.configure(text="Current Task: N/A")
-            self.time_label.configure(text=f"Process Complete in {time_str}")
-            self.reset_ui()
-            logging.info(f"Processing completed in {time_str}")
-            log_session(f"UI Update: Processing completed in {time_str}")
-        elif msg_type == "canceled":
-            reason = args[0]
-            elapsed = time.time() - self.start_time if self.start_time else 0
-            minutes = int(elapsed // 60)
-            seconds = int(elapsed % 60)
-            time_str = f"{minutes} min {seconds} sec"
-            for widget in self.output_frame.winfo_children():
-                widget.destroy()
-            cancel_label = ctk.CTkLabel(self.output_frame, text=f"Canceled: {reason}")
-            cancel_label.pack()
-            self.current_task_label.configure(text="Current Task: N/A")
-            self.time_label.configure(text=f"Process Canceled in {time_str}")
-            self.reset_ui()
-            logging.info(f"Processing canceled: {reason}")
-            log_session(f"UI Update: Processing canceled: {reason} in {time_str}")
-
-    def reset_ui(self):
-        self.switch_60s.configure(state="normal")
-        self.switch_12min.configure(state="normal")
-        self.switch_1h.configure(state="normal")
-        self.browse_button.configure(state="normal")
-        self.start_button.configure(state="normal" if self.input_files else "disabled")
-        self.cancel_button.configure(state="disabled")
-        log_session("UI reset to initial state")
-
-    def get_youtube_client(self):
-        if not hasattr(self, 'youtube_client'):
-            credentials = None
-            if os.path.exists('token.pickle'):
-                try:
-                    with open('token.pickle', 'rb') as token:
-                        credentials = pickle.load(token)
-                    log_session("Loaded YouTube credentials from token.pickle")
-                except (pickle.PickleError, EOFError) as e:
-                    logging.error(f"Failed to load token.pickle: {str(e)}")
-                    log_session(f"Error: Failed to load token.pickle: {str(e)}")
-                    os.remove('token.pickle')
-                    credentials = None
-            if not credentials or not credentials.valid:
-                if credentials and credentials.expired and credentials.refresh_token:
-                    try:
-                        credentials.refresh(Request())
-                        log_session("Refreshed YouTube credentials")
-                    except Exception as e:
-                        logging.error(f"Failed to refresh credentials: {str(e)}")
-                        log_session(f"Error: Failed to refresh credentials: {str(e)}")
-                        credentials = None
-                if not credentials:
-                    if not os.path.exists('client_secrets.json'):
-                        messagebox.showerror("Error", "client_secrets.json not found.")
-                        log_session("Error: client_secrets.json not found for YouTube authentication")
-                        return None
-                    try:
-                        flow = InstalledAppFlow.from_client_secrets_file(
-                            'client_secrets.json',
-                            scopes=['https://www.googleapis.com/auth/youtube.upload']
-                        )
-                        credentials = flow.run_local_server(port=0)
-                        log_session("Authenticated with YouTube API")
-                    except Exception as e:
-                        logging.error(f"Failed to authenticate: {str(e)}")
-                        log_session(f"Error: Failed to authenticate with YouTube API: {str(e)}")
-                        messagebox.showerror("Error", "Authentication failed.")
-                        return None
-                with open('token.pickle', 'wb') as token:
-                    pickle.dump(credentials, token)
-                    log_session("Saved YouTube credentials to token.pickle")
-            self.youtube_client = build('youtube', 'v3', credentials=credentials)
-            logging.info("YouTube client initialized")
-            log_session("YouTube client initialized")
-        return self.youtube_client
-
-    def start_upload(self, file_path, task_name, button):
-        if not os.path.exists(file_path):
-            messagebox.showerror("Error", f"Video file not found: {file_path}")
-            button.configure(state="normal", text="Upload to YouTube")
-            log_session(f"Error: Video file not found for upload: {file_path}")
-            return
-        if not validate_video_file(file_path):
-            messagebox.showerror("Error", "Invalid or corrupted video file.")
-            button.configure(state="normal", text="Upload to YouTube")
-            log_session(f"Error: Invalid or corrupted video file for upload: {file_path}")
-            return
-        if not check_network_stability():
-            messagebox.showerror("Error", "Network unstable.")
-            button.configure(state="normal", text="Upload to YouTube")
-            log_session("Error: Network unstable, cannot upload to YouTube")
-            return
-        button.configure(state="disabled", text="Uploading...")
-        thread = threading.Thread(target=self.upload_to_youtube, args=(file_path, task_name, button))
-        thread.start()
-        log_session(f"Started YouTube upload for {file_path}")
-
-    def upload_to_youtube(self, file_path, task_name, button):
-        max_retries = 10
-        for attempt in range(max_retries):
-            try:
-                youtube = self.get_youtube_client()
-                if not youtube:
-                    return
-                duration_str = task_name.split()[1]
-                file_name = os.path.splitext(os.path.basename(file_path))[0]
-                title = file_name + (" #shorts" if duration_str == "60s" else "")
-                description = "Uploaded via Bird Box Video Processor" + (" #shorts" if duration_str == "60s" else "")
-                tags = ['bird', 'nature', 'video'] + (['#shorts'] if duration_str == "60s" else [])
-                request_body = {
-                    'snippet': {'title': title, 'description': description, 'tags': tags, 'categoryId': '22'},
-                    'status': {'privacyStatus': 'unlisted'}
-                }
-                media = MediaFileUpload(file_path, resumable=True, chunksize=512 * 1024)
-                request = youtube.videos().insert(part='snippet,status', body=request_body, media_body=media)
-                response = None
-                while response is None:
-                    status, response = request.next_chunk()
-                    if status:
-                        progress = status.progress() * 100
-                        self.queue.put(("upload_progress", progress))
-                logging.info(f"Upload successful: {file_path}")
-                log_session(f"Upload successful: {file_path}, YouTube URL: https://youtu.be/{response['id']}")
-                self.root.after(0, lambda: messagebox.showinfo("Success", f"Video uploaded: https://youtu.be/{response['id']}"))
-                break
-            except Exception as e:
-                logging.error(f"Upload error: {str(e)}", exc_info=True)
-                log_session(f"Error: Upload failed: {str(e)}")
-                self.root.after(0, lambda: messagebox.showerror("Error", f"Upload failed: {str(e)}"))
-                break
-            finally:
-                self.root.after(0, lambda b=button: b.configure(state="normal", text="Upload to YouTube"))
-
-    def load_preset(self):
-        preset_name = self.preset_combobox.get()
-        if preset_name in self.presets:
-            preset = self.presets[preset_name]
-            self.motion_slider.set(preset.get("motion_threshold", 3000))
-            self.white_slider.set(preset.get("white_threshold", 200))
-            self.black_slider.set(preset.get("black_threshold", 50))
-            self.clip_slider.set(preset.get("clip_limit", 1.0))
-            self.saturation_slider.set(preset.get("saturation_multiplier", 1.1))
-            self.update_settings(0)
-            log_session(f"Loaded preset: {preset_name}")
-
-    def save_preset(self):
-        preset_name = self.preset_name_entry.get()
-        if preset_name:
-            self.presets[preset_name] = {
-                "motion_threshold": int(self.motion_slider.get()),
-                "white_threshold": int(self.white_slider.get()),
-                "black_threshold": int(self.black_slider.get()),
-                "clip_limit": float(self.clip_slider.get()),
-                "saturation_multiplier": float(self.saturation_slider.get())
-            }
-            with open("presets.json", "w") as f:
-                json.dump(self.presets, f)
-            self.preset_combobox.configure(values=list(self.presets.keys()))
-            log_session(f"Saved preset: {preset_name}")
-
-if __name__ == "__main__":
-    root = ctk.CTk()
-    app = VideoProcessorApp(root)
-    root.mainloop()
+                        output_file = os.path.join(self.output_dir, os.path.basename(output_file
