@@ -326,7 +326,7 @@ class VideoProcessorApp:
         theme_frame = ctk.CTkFrame(root)
         theme_frame.pack(pady=5)
         ctk.CTkLabel(theme_frame, text="Theme:").pack(side=tk.LEFT, padx=5)
-        ctk.CTkOptionMenu(theme_frame, variable=self.theme_var, values=["light", "dark"], command=self.toggle_theme).pack(side=tk.LEFT)
+        ctk.CTkOptionMenu(theme_frame, variable=self.theme_var, values=["Light", "Dark"], command=self.toggle_theme).pack(side=tk.LEFT)
 
         self.label = ctk.CTkLabel(root, text="Select Input Video(s)")
         self.label.pack(pady=10)
