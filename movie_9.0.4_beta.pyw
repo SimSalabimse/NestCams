@@ -34,16 +34,12 @@ except ImportError:
     speedtest = None
     logging.warning("speedtest module not found. Network stability checks will be limited.")
 
-# Version number
 VERSION = "9.0.4_beta"
-
 UPDATE_CHANNELS = ["Stable", "Beta"]
 
-# Create log directory
 log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log")
 os.makedirs(log_dir, exist_ok=True)
 
-# Set up logging
 logging.basicConfig(filename=os.path.join(log_dir, 'upload_log.txt'), level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 session_log_file = os.path.join(log_dir, f"session_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
 session_logger = logging.getLogger('session')
@@ -53,11 +49,7 @@ session_logger.addHandler(session_handler)
 session_logger.setLevel(logging.INFO)
 
 thread_lock = threading.Lock()
-
-# Global cancel event for multiprocessing
 cancel_event = Event()
-
-### Helper Functions
 
 def log_session(message):
     session_logger.info(message)
@@ -404,13 +396,13 @@ class VideoProcessorApp:
 
         self.input_files = []
         self.queue = queue.Queue()
-        self.preview_queue = queue.Queue()  # Added for preview updates
+        self.preview_queue = queue.Queue(maxsize=5)  # Reduced size for efficiency
         self.start_time = None
         self.preview_image = None
         self.blank_ctk_image = ctk.CTkImage(light_image=Image.new('RGB', (200, 150), (0, 0, 0)), 
                                             dark_image=Image.new('RGB', (200, 150), (0, 0, 0)), size=(200, 150))
         self.root.after(50, self.process_queue)
-        self.root.after(10, self.process_preview_queue)  # Start preview queue processing
+        self.root.after(33, self.update_preview)  # Approx 30 FPS for GUI updates
 
         self.motion_threshold = 3000
         self.white_threshold = 200
@@ -421,7 +413,9 @@ class VideoProcessorApp:
         self.output_dir = None
         self.custom_ffmpeg_args = None
         self.watermark_text = None
-        self.preview_running = threading.Event()
+        self.preview_running = False
+        self.preview_thread = None
+        self.preview_cap = None
         self.update_channel = "Stable"
 
         self.music_paths = {"default": None, 60: None, 720: None, 3600: None}
@@ -429,18 +423,6 @@ class VideoProcessorApp:
         self.load_settings()
         self.load_presets()
         self.check_for_updates()
-
-    def process_preview_queue(self):
-        """Process preview updates in the main thread."""
-        try:
-            while True:
-                ctk_img, current_frame = self.preview_queue.get_nowait()
-                self.preview_label.configure(image=ctk_img)
-                self.preview_image = ctk_img
-                self.preview_slider.set(current_frame)
-        except queue.Empty:
-            pass
-        self.root.after(10, self.process_preview_queue)
 
     def load_settings(self):
         try:
@@ -686,84 +668,121 @@ class VideoProcessorApp:
         control_frame.pack(pady=5)
         self.preview_button = ctk.CTkButton(control_frame, text="Start Preview", command=self.toggle_preview, state="disabled")
         self.preview_button.pack(side=tk.LEFT, padx=5)
-        self.preview_slider = ctk.CTkSlider(control_frame, from_=0, to=0, number_of_steps=0, command=self.update_preview_frame)
+        self.preview_slider = ctk.CTkSlider(control_frame, from_=0, to=0, number_of_steps=0, command=self.seek_preview)
         self.preview_slider.pack(side=tk.LEFT, padx=5)
 
-        self.preview_cap = None
-        self.playback_thread = None
         if self.input_files:
             self.initialize_preview()
 
     def initialize_preview(self):
-        self.preview_cap = cv2.VideoCapture(self.input_files[0])
-        if self.preview_cap.isOpened():
-            self.fps = self.preview_cap.get(cv2.CAP_PROP_FPS)
-            self.total_frames = int(self.preview_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            self.preview_slider.configure(to=self.total_frames - 1, number_of_steps=self.total_frames - 1)
-            duration = self.total_frames / self.fps if self.fps > 0 else 0
-            ctk.CTkLabel(self.settings_window, text=f"Video duration: {duration:.2f} seconds").pack(pady=5)
-            self.preview_button.configure(state="normal")
+        if self.input_files and not self.preview_cap:
+            self.preview_cap = cv2.VideoCapture(self.input_files[0])
+            if self.preview_cap.isOpened():
+                self.fps = max(self.preview_cap.get(cv2.CAP_PROP_FPS), 1)  # Ensure FPS is at least 1
+                self.total_frames = int(self.preview_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                self.preview_slider.configure(to=self.total_frames - 1, number_of_steps=self.total_frames - 1)
+                duration = self.total_frames / self.fps
+                ctk.CTkLabel(self.settings_window, text=f"Video duration: {duration:.2f} seconds").pack(pady=5)
+                self.preview_button.configure(state="normal")
+                log_session(f"Initialized preview for {self.input_files[0]}")
+            else:
+                logging.error(f"Failed to open video for preview: {self.input_files[0]}")
+                log_session(f"Error: Failed to initialize preview for {self.input_files[0]}")
+                self.preview_cap = None
 
     def toggle_preview(self):
-        if self.preview_running.is_set():
-            self.stop_preview_playback()
+        if self.preview_running:
+            self.stop_preview()
         else:
-            self.start_preview_playback()
+            self.start_preview()
 
-    def start_preview_playback(self):
-        if self.preview_cap and self.preview_cap.isOpened() and not self.preview_running.is_set():
-            self.preview_running.set()
-            self.preview_button.configure(text="Stop Preview")
-            self.playback_thread = threading.Thread(target=self.preview_playback, daemon=True)  # Daemon thread for safety
-            self.playback_thread.start()
-            log_session("Started preview playback")
-
-    def stop_preview_playback(self):
-        if self.preview_running.is_set():
-            self.preview_running.clear()
-            if self.playback_thread:
-                self.playback_thread.join(timeout=1)  # Timeout to prevent hanging
-                if self.playback_thread.is_alive():
-                    logging.warning("Preview thread did not stop in time")
-                    log_session("Warning: Preview thread did not stop within 1 second")
-                self.playback_thread = None
-            self.preview_button.configure(text="Start Preview")
-            self.preview_label.configure(image=self.blank_ctk_image)
-            log_session("Stopped preview playback")
-
-    def preview_playback(self):
-        """Run in a separate thread, send data to preview_queue."""
-        log_session("Preview playback thread started")
-        if not self.preview_cap or not self.preview_cap.isOpened():
-            log_session("Preview playback thread exiting: no video capture")
+    def start_preview(self):
+        if not self.input_files or self.preview_running:
+            log_session("Cannot start preview: no input files or already running")
             return
-        start_frame = int(self.preview_slider.get())
-        self.preview_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-        while self.preview_running.is_set():
+        if not self.preview_cap or not self.preview_cap.isOpened():
+            self.initialize_preview()
+            if not self.preview_cap or not self.preview_cap.isOpened():
+                log_session("Cannot start preview: failed to initialize video capture")
+                return
+        self.preview_running = True
+        self.preview_button.configure(text="Stop Preview")
+        self.preview_thread = threading.Thread(target=self.read_frames, daemon=True)
+        self.preview_thread.start()
+        log_session("Preview started")
+
+    def stop_preview(self):
+        if not self.preview_running:
+            log_session("Preview not running")
+            return
+        self.preview_running = False
+        if self.preview_thread:
+            self.preview_thread.join(timeout=1.0)
+            if self.preview_thread.is_alive():
+                logging.warning("Preview thread did not stop within timeout")
+                log_session("Warning: Preview thread did not stop within timeout")
+            self.preview_thread = None
+        if self.preview_cap:
+            self.preview_cap.release()
+            self.preview_cap = None
+        self.preview_button.configure(text="Start Preview")
+        self.preview_label.configure(image=self.blank_ctk_image)
+        with self.preview_queue.mutex:
+            self.preview_queue.queue.clear()
+        log_session("Preview stopped")
+
+    def read_frames(self):
+        log_session("Started frame reading thread")
+        frame_interval = 1 / self.fps
+        while self.preview_running and self.preview_cap.isOpened():
+            start_time = time.time()
+            current_frame = int(self.preview_slider.get())
+            self.preview_cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame)
             ret, frame = self.preview_cap.read()
             if not ret:
-                self.preview_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+                log_session("Reached end of video or error, looping back")
+                self.preview_slider.set(0)
                 continue
-            frame = cv2.resize(frame, (200, 150))
+            frame = cv2.resize(frame, (200, 150), interpolation=cv2.INTER_AREA)
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             img = Image.fromarray(frame_rgb)
             ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(200, 150))
-            current_frame = self.preview_cap.get(cv2.CAP_PROP_POS_FRAMES)
-            self.preview_queue.put((ctk_img, current_frame))
-            time.sleep(1 / self.fps if self.fps > 0 else 0.033)
-        log_session("Preview playback thread exiting")
+            try:
+                self.preview_queue.put_nowait((ctk_img, current_frame + 1))
+            except queue.Full:
+                log_session(f"Queue full at frame {current_frame}, dropping frame")
+                continue
+            elapsed = time.time() - start_time
+            sleep_time = max(0, frame_interval - elapsed)
+            time.sleep(sleep_time)
+        log_session("Frame reading thread stopped")
 
-    def update_preview_frame(self, frame_idx):
-        if self.preview_cap and not self.preview_running.is_set():
-            self.preview_cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_idx))
+    def update_preview(self):
+        if self.preview_running and self.settings_window.winfo_exists():
+            try:
+                ctk_img, next_frame = self.preview_queue.get_nowait()
+                if self.preview_label.winfo_exists():
+                    self.preview_label.configure(image=ctk_img)
+                    self.preview_image = ctk_img
+                    self.preview_slider.set(next_frame)
+            except queue.Empty:
+                pass
+        self.root.after(33, self.update_preview)  # 33ms ~= 30 FPS
+
+    def seek_preview(self, frame_idx):
+        if not self.preview_running and self.preview_cap and self.preview_cap.isOpened():
+            frame_idx = int(frame_idx)
+            self.preview_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
             ret, frame = self.preview_cap.read()
             if ret:
-                frame = cv2.resize(frame, (200, 150))
+                frame = cv2.resize(frame, (200, 150), interpolation=cv2.INTER_AREA)
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 img = Image.fromarray(frame_rgb)
                 ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(200, 150))
                 self.preview_label.configure(image=ctk_img)
                 self.preview_image = ctk_img
+            else:
+                log_session(f"Failed to seek to frame {frame_idx}")
 
     def select_output_dir(self):
         directory = filedialog.askdirectory()
@@ -789,13 +808,10 @@ class VideoProcessorApp:
             time.sleep(60)
 
     def on_settings_close(self):
-        if self.preview_running.is_set():
-            self.stop_preview_playback()
-        if self.preview_cap:
-            self.preview_cap.release()
-            self.preview_cap = None
+        if self.preview_running:
+            self.stop_preview()
         self.settings_window.destroy()
-        log_session("Closed settings and preview window")
+        log_session("Settings window closed")
 
     def update_settings(self, value):
         self.motion_threshold = int(self.motion_slider.get())
@@ -866,6 +882,8 @@ class VideoProcessorApp:
         if self.input_files:
             self.label.configure(text=f"Selected: {len(self.input_files)} file(s)")
             self.start_button.configure(state="normal")
+            if hasattr(self, 'settings_window') and self.settings_window.winfo_exists():
+                self.initialize_preview()
             log_session(f"Selected {len(self.input_files)} file(s): {', '.join(self.input_files)}")
         else:
             log_session("No files selected")
