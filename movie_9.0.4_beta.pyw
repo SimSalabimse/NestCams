@@ -595,7 +595,7 @@ class VideoProcessorApp:
 
         default_music_frame = ctk.CTkFrame(music_settings_frame)
         default_music_frame.pack(pady=2)
-        ctk.CTkLabel(default_music_frame, text развития="Default Music:").pack(side=tk_LEFT)
+        ctk.CTkLabel(default_music_frame, text="Default Music:").pack(side=tk_LEFT)
         default_path = self.music_paths.get("default")
         self.music_label_default = ctk.CTkLabel(default_music_frame, text="No music selected" if not default_path else os.path.basename(default_path))
         self.music_label_default.pack(side=tk_LEFT, padx=5)
