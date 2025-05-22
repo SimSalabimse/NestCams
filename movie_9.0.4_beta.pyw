@@ -79,7 +79,6 @@ def is_white_or_black_frame(frame, white_threshold=200, black_threshold=50):
 
 def normalize_frame(frame, clip_limit=1.0, saturation_multiplier=1.1):
     try:
-        # Downscale early to save memory
         frame = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2))
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
@@ -160,7 +159,6 @@ def get_selected_indices(input_path, motion_threshold, white_threshold, black_th
         if not ret:
             logging.warning(f"Failed to read frame {frame_idx} from {input_path}")
             break
-        # Downscale early for memory efficiency
         frame_resized = cv2.resize(frame, (640, 360))
         if prev_frame_resized is not None:
             motion_score = compute_motion_score(prev_frame_resized, frame_resized)
@@ -204,8 +202,8 @@ def process_frame_batch(input_path, clip_limit, saturation_multiplier, rotate, t
     return results
 
 def generate_output_video(input_path, output_path, desired_duration, selected_indices, clip_limit=1.0, saturation_multiplier=1.1, 
-                          output_format='mp4', progress_callback=None, music_paths=None, music_volume=1.0, 
-                          status_callback=None, custom_ffmpeg_args=None, watermark_text=None):
+                         output_format='mp4', progress_callback=None, music_paths=None, music_volume=1.0, 
+                         status_callback=None, custom_ffmpeg_args=None, watermark_text=None):
     try:
         logging.info(f"Generating video: {output_path}")
         log_session(f"Generating video: {output_path}")
@@ -278,14 +276,12 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
             log_session("Creating video with FFmpeg")
             temp_final_path = f"temp_final_{uuid.uuid4().hex}.{output_format}"
             
-            # Attempt hardware acceleration with fallback
             cmd = ['ffmpeg', '-framerate', str(new_fps), '-i', os.path.join(temp_dir, 'frame_%04d.jpg')]
             try:
-                # Check for NVIDIA hardware acceleration
                 subprocess.run(['ffmpeg', '-hwaccels'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
                 cmd.extend(['-c:v', 'h264_nvenc', '-preset', 'fast'])
             except subprocess.CalledProcessError:
-                cmd.extend(['-c:v', 'libx264', '-preset', 'fast'])  # Fallback to software encoding
+                cmd.extend(['-c:v', 'libx264', '-preset', 'fast'])
             cmd.extend(['-pix_fmt', 'yuv420p'])
             if watermark_text:
                 cmd.extend(['-vf', f'drawtext=text={watermark_text}:fontcolor=white:fontsize=24:x=10:y=10'])
@@ -408,11 +404,13 @@ class VideoProcessorApp:
 
         self.input_files = []
         self.queue = queue.Queue()
+        self.preview_queue = queue.Queue()  # Added for preview updates
         self.start_time = None
         self.preview_image = None
         self.blank_ctk_image = ctk.CTkImage(light_image=Image.new('RGB', (200, 150), (0, 0, 0)), 
                                             dark_image=Image.new('RGB', (200, 150), (0, 0, 0)), size=(200, 150))
         self.root.after(50, self.process_queue)
+        self.root.after(10, self.process_preview_queue)  # Start preview queue processing
 
         self.motion_threshold = 3000
         self.white_threshold = 200
@@ -431,6 +429,18 @@ class VideoProcessorApp:
         self.load_settings()
         self.load_presets()
         self.check_for_updates()
+
+    def process_preview_queue(self):
+        """Process preview updates in the main thread."""
+        try:
+            while True:
+                ctk_img, current_frame = self.preview_queue.get_nowait()
+                self.preview_label.configure(image=ctk_img)
+                self.preview_image = ctk_img
+                self.preview_slider.set(current_frame)
+        except queue.Empty:
+            pass
+        self.root.after(10, self.process_preview_queue)
 
     def load_settings(self):
         try:
@@ -495,21 +505,14 @@ class VideoProcessorApp:
             self.presets = {}
 
     def check_for_updates(self):
-        """Check for updates from GitHub with robust error handling."""
         try:
-            channel = self.update_channel  # 'Stable' or 'Beta'
+            channel = self.update_channel
             url = f"https://raw.githubusercontent.com/SimSalabimse/NestCams/main/{channel}_version.txt"
-            # Attempt to fetch the version file with a timeout
             response = requests.get(url, timeout=5)
-            # Raise an exception if the request failed (e.g., 404, 500)
             response.raise_for_status()
             latest_version_str = response.text.strip()
-
-            # Basic validation: ensure the string looks like a version (e.g., '9.0.5')
             if not any(char.isdigit() for char in latest_version_str):
                 raise ValueError(f"Response does not contain a valid version: '{latest_version_str}'")
-
-            # Parse versions and compare
             current_version = version.parse(VERSION)
             latest_version = version.parse(latest_version_str)
             if latest_version > current_version:
@@ -520,17 +523,13 @@ class VideoProcessorApp:
                 log_session(f"Update available for {channel}: {latest_version_str}")
             else:
                 log_session(f"No update available. Current: {VERSION}, Latest: {latest_version_str}")
-
         except requests.RequestException as e:
-            # Handle network errors (e.g., 404, timeout, connection issues)
             logging.error(f"Failed to fetch update information from {url}: {e}")
             log_session(f"Update check failed due to network issue: {e}")
         except ValueError as e:
-            # Handle invalid version strings
             logging.error(f"Invalid version data received: {e}")
             log_session(f"Update check failed due to invalid version data: {e}")
         except Exception as e:
-            # Catch any unexpected errors
             logging.error(f"Unexpected error during update check: {e}")
             log_session(f"Unexpected error during update check: {e}")
 
@@ -715,7 +714,7 @@ class VideoProcessorApp:
         if self.preview_cap and self.preview_cap.isOpened() and not self.preview_running.is_set():
             self.preview_running.set()
             self.preview_button.configure(text="Stop Preview")
-            self.playback_thread = threading.Thread(target=self.preview_playback)
+            self.playback_thread = threading.Thread(target=self.preview_playback, daemon=True)  # Daemon thread for safety
             self.playback_thread.start()
             log_session("Started preview playback")
 
@@ -723,14 +722,20 @@ class VideoProcessorApp:
         if self.preview_running.is_set():
             self.preview_running.clear()
             if self.playback_thread:
-                self.playback_thread.join()
+                self.playback_thread.join(timeout=1)  # Timeout to prevent hanging
+                if self.playback_thread.is_alive():
+                    logging.warning("Preview thread did not stop in time")
+                    log_session("Warning: Preview thread did not stop within 1 second")
                 self.playback_thread = None
             self.preview_button.configure(text="Start Preview")
             self.preview_label.configure(image=self.blank_ctk_image)
             log_session("Stopped preview playback")
 
     def preview_playback(self):
+        """Run in a separate thread, send data to preview_queue."""
+        log_session("Preview playback thread started")
         if not self.preview_cap or not self.preview_cap.isOpened():
+            log_session("Preview playback thread exiting: no video capture")
             return
         start_frame = int(self.preview_slider.get())
         self.preview_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
@@ -743,10 +748,10 @@ class VideoProcessorApp:
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             img = Image.fromarray(frame_rgb)
             ctk_img = ctk.CTkImage(light_image=img, dark_image=img, size=(200, 150))
-            self.preview_label.configure(image=ctk_img)
-            self.preview_image = ctk_img
-            self.preview_slider.set(self.preview_cap.get(cv2.CAP_PROP_POS_FRAMES))
+            current_frame = self.preview_cap.get(cv2.CAP_PROP_POS_FRAMES)
+            self.preview_queue.put((ctk_img, current_frame))
             time.sleep(1 / self.fps if self.fps > 0 else 0.033)
+        log_session("Preview playback thread exiting")
 
     def update_preview_frame(self, frame_idx):
         if self.preview_cap and not self.preview_running.is_set():
