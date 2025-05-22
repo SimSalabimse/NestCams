@@ -327,13 +327,13 @@ class VideoProcessorApp:
     def __init__(self, root):
         self.root = root
         self.root.title(f"Bird Box Video Processor v{VERSION}")
-        ctk.set_appearance_mode("dark")
+        ctk.set_appearance_mode("Dark")
         ctk.set_default_color_theme("dark-blue")
         log_session("Application started")
         self.root.resizable(True, True)
         self.root.geometry("800x600")
 
-        self.theme_var = tk.StringVar(value="dark")
+        self.theme_var = tk.StringVar(value="Dark")
         theme_frame = ctk.CTkFrame(root)
         theme_frame.pack(pady=5)
         ctk.CTkLabel(theme_frame, text="Theme:").pack(side=tk.LEFT, padx=5)
