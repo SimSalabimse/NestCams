@@ -913,4 +913,4 @@ class VideoProcessorApp:
                         break
                     output_file = f"{base}_{task_name.split()[1]}.{output_format}"
                     if self.output_dir:
-                        output_file = os.path.join(self.output_dir, os.path.basename(output_file
+                        output_file = os.path.join(self.output_dir, os.path.basename(output_file))
