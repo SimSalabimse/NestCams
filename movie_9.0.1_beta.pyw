@@ -21,7 +21,7 @@ import requests
 from datetime import datetime
 import tempfile
 import schedule
-from multiprocessing import Pool
+from multiprocessing import Pool, Event  # Updated to include Event
 from packaging import version
 import functools
 
@@ -34,7 +34,7 @@ except ImportError:
 # Version number
 VERSION = "9.0.1_beta"
 
-# Update channels
+# Update channels (lowercase for consistency)
 UPDATE_CHANNELS = ["Stable", "Beta"]
 
 # Create log directory
@@ -144,7 +144,7 @@ def get_selected_indices(input_path, motion_threshold, white_threshold, black_th
     selected_indices = []
     start_time = time.time()
     for frame_idx in range(total_frames):
-        if cancel_event and cancel_event.is_set():
+        if cancel_event.is_set():
             cap.release()
             logging.info("Motion detection canceled by user")
             log_session("Motion detection canceled by user")
@@ -170,10 +170,10 @@ def get_selected_indices(input_path, motion_threshold, white_threshold, black_th
     log_session(f"Motion detection completed for {input_path}, {len(selected_indices)} frames selected")
     return selected_indices
 
-# Moved process_frame to module level to fix pickling issue
+# Process_frame at module level
 def process_frame(input_path, clip_limit, saturation_multiplier, rotate, temp_dir, cancel_event, task):
     frame_idx, order = task
-    if cancel_event and cancel_event.is_set():
+    if cancel_event.is_set():
         return None
     cap = cv2.VideoCapture(input_path)
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
@@ -230,7 +230,6 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
             log_session("Saving processed frames")
             frame_tasks = [(idx, i) for i, idx in enumerate(final_indices)]
             with Pool() as pool:
-                # Use functools.partial to bind arguments to process_frame
                 partial_process_frame = functools.partial(
                     process_frame,
                     input_path,
@@ -318,13 +317,14 @@ class VideoProcessorApp:
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("dark-blue")
         log_session("Application started")
-        self.root.resizable(True, True)  # Make main window resizable
+        self.root.resizable(True, True)
 
-        self.theme_var = tk.StringVar(value="Dark")
+        # Theme (lowercase for CustomTkinter compatibility)
+        self.theme_var = tk.StringVar(value="dark")
         theme_frame = ctk.CTkFrame(root)
         theme_frame.pack(pady=5)
         ctk.CTkLabel(theme_frame, text="Theme:").pack(side=tk.LEFT, padx=5)
-        ctk.CTkOptionMenu(theme_frame, variable=self.theme_var, values=["Light", "Dark"], command=self.toggle_theme).pack(side=tk.LEFT)
+        ctk.CTkOptionMenu(theme_frame, variable=self.theme_var, values=["light", "dark"], command=self.toggle_theme).pack(side=tk.LEFT)
 
         self.label = ctk.CTkLabel(root, text="Select Input Video(s)")
         self.label.pack(pady=10)
@@ -372,16 +372,16 @@ class VideoProcessorApp:
         self.output_label = ctk.CTkLabel(root, text="Output Files:")
         self.output_label.pack(pady=10)
 
-        self.output_frame = ctk.CTkScrollableFrame(root)  # Use scrollable frame for output
+        self.output_frame = ctk.CTkScrollableFrame(root)
         self.output_frame.pack(pady=5, fill='both', expand=True)
 
         self.input_files = []
-        self.cancel_event = threading.Event()
+        self.cancel_event = Event()  # Updated to multiprocessing.Event
         self.queue = queue.Queue()
         self.start_time = None
         self.preview_image = None
         self.blank_ctk_image = ctk.CTkImage(light_image=Image.new('RGB', (200, 150), (0, 0, 0)), 
-                                          dark_image=Image.new('RGB', (200, 150), (0, 0, 0)), size=(200, 150))
+                                            dark_image=Image.new('RGB', (200, 150), (0, 0, 0)), size=(200, 150))
         self.root.after(50, self.process_queue)
 
         self.motion_threshold = 3000
@@ -394,7 +394,7 @@ class VideoProcessorApp:
         self.custom_ffmpeg_args = None
         self.watermark_text = None
         self.preview_running = threading.Event()
-        self.update_channel = "stable"  # Default update channel
+        self.update_channel = "Stable"
 
         self.music_paths = {"default": None, 60: None, 720: None, 3600: None}
         self.load_settings()
@@ -414,7 +414,7 @@ class VideoProcessorApp:
                 self.output_dir = settings.get("output_dir", None)
                 self.custom_ffmpeg_args = settings.get("custom_ffmpeg_args", None)
                 self.watermark_text = settings.get("watermark_text", None)
-                self.update_channel = settings.get("update_channel", "stable")
+                self.update_channel = settings.get("update_channel", "Stable")
                 loaded_music_paths = settings.get("music_paths", {})
                 for key in self.music_paths:
                     if str(key) in loaded_music_paths:
@@ -431,6 +431,7 @@ class VideoProcessorApp:
         self.clip_limit = float(self.clip_slider.get())
         self.saturation_multiplier = float(self.saturation_slider.get())
         self.music_volume = self.music_volume_slider.get()
+        self.customM
         self.custom_ffmpeg_args = self.ffmpeg_entry.get().split() if self.ffmpeg_entry.get() else None
         self.watermark_text = self.watermark_entry.get() or None
         self.update_channel = self.update_channel_var.get()
@@ -478,19 +479,19 @@ class VideoProcessorApp:
             log_session(f"Update check failed: {e}")
 
     def toggle_theme(self, theme):
-        ctk.set_appearance_mode(theme)
+        ctk.set_appearance_mode(theme.lower())  # Ensure lowercase
         log_session(f"Theme changed to {theme}")
 
     def open_settings(self):
         self.settings_window = ctk.CTkToplevel(self.root)
         self.settings_window.title("Settings & Preview")
         self.settings_window.protocol("WM_DELETE_WINDOW", self.on_settings_close)
-        self.settings_window.resizable(True, True)  # Make settings window resizable
-        self.settings_window.lift()  # Bring to front
-        self.settings_window.transient(self.root)  # Tie to main window
+        self.settings_window.resizable(True, True)
+        self.settings_window.lift()
+        self.settings_window.transient(self.root)
         log_session("Opened settings and preview window")
 
-        settings_frame = ctk.CTkScrollableFrame(self.settings_window)  # Use scrollable frame
+        settings_frame = ctk.CTkScrollableFrame(self.settings_window)
         settings_frame.pack(side=tk.LEFT, padx=10, pady=10, fill='both', expand=True)
 
         ctk.CTkLabel(settings_frame, text="Motion Sensitivity").pack(pady=5)
@@ -741,7 +742,7 @@ class VideoProcessorApp:
         self.output_dir_label.configure(text="Default")
         self.ffmpeg_entry.delete(0, tk.END)
         self.watermark_entry.delete(0, tk.END)
-        self.update_channel_var.set("stable")
+        self.update_channel_var.set("Stable")
         self.update_settings(0)
         log_session("Reset settings to default values")
 
@@ -794,8 +795,9 @@ class VideoProcessorApp:
             log_session(f"Selected video durations: {[name for name, _ in selected_videos]}")
 
             output_format = self.output_format_var.get()
-            total_tasks = len(self.input_files) * (len(selected_videos) + 1)  # +1 for motion detection per file
+            total_tasks = len(self.input_files) * (len(selected_videos) + 1)
             task_count = 0
+            has_error = False
 
             for input_file in self.input_files:
                 base, _ = os.path.splitext(input_file)
@@ -812,16 +814,19 @@ class VideoProcessorApp:
                 )
                 if selected_indices is None:
                     self.queue.put(("canceled", "Processing canceled by user"))
+                    has_error = True
                     break
                 if not selected_indices:
                     logging.warning(f"No frames selected for {input_file}")
                     log_session(f"Warning: No frames selected for {input_file}")
                     self.queue.put(("canceled", "No frames selected after motion detection"))
+                    has_error = True
                     continue
 
                 for task_name, duration in selected_videos:
                     if self.cancel_event.is_set():
                         self.queue.put(("canceled", "User Cancellation"))
+                        has_error = True
                         break
                     output_file = f"{base}_{task_name.split()[1]}.{output_format}"
                     if self.output_dir:
@@ -853,10 +858,12 @@ class VideoProcessorApp:
                     )
                     if error:
                         self.queue.put(("canceled", error))
+                        has_error = True
                         break
                     else:
                         output_files[task_name] = output_file
-                self.queue.put(("complete", output_files, time.time() - self.start_time))
+                if not has_error:
+                    self.queue.put(("complete", output_files, time.time() - self.start_time))
             logging.info("process_video_thread finished")
             log_session("Processing thread finished")
         except Exception as e:
