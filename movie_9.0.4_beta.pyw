@@ -495,18 +495,44 @@ class VideoProcessorApp:
             self.presets = {}
 
     def check_for_updates(self):
+        """Check for updates from GitHub with robust error handling."""
         try:
-            channel = self.update_channel
-            response = requests.get(f"https://raw.githubusercontent.com/SimSalabimse/NestCams/main/{channel}_version.txt", timeout=5)
+            channel = self.update_channel  # 'Stable' or 'Beta'
+            url = f"https://raw.githubusercontent.com/SimSalabimse/NestCams/main/{channel}_version.txt"
+            # Attempt to fetch the version file with a timeout
+            response = requests.get(url, timeout=5)
+            # Raise an exception if the request failed (e.g., 404, 500)
+            response.raise_for_status()
             latest_version_str = response.text.strip()
+
+            # Basic validation: ensure the string looks like a version (e.g., '9.0.5')
+            if not any(char.isdigit() for char in latest_version_str):
+                raise ValueError(f"Response does not contain a valid version: '{latest_version_str}'")
+
+            # Parse versions and compare
             current_version = version.parse(VERSION)
             latest_version = version.parse(latest_version_str)
             if latest_version > current_version:
-                messagebox.showinfo("Update Available", f"Version {latest_version_str} is available for {channel} channel! Please restart to update.")
+                messagebox.showinfo(
+                    "Update Available",
+                    f"Version {latest_version_str} is available for {channel} channel! Please restart to update."
+                )
                 log_session(f"Update available for {channel}: {latest_version_str}")
+            else:
+                log_session(f"No update available. Current: {VERSION}, Latest: {latest_version_str}")
+
         except requests.RequestException as e:
-            logging.error(f"Update check failed: {e}")
-            log_session(f"Update check failed: {e}")
+            # Handle network errors (e.g., 404, timeout, connection issues)
+            logging.error(f"Failed to fetch update information from {url}: {e}")
+            log_session(f"Update check failed due to network issue: {e}")
+        except ValueError as e:
+            # Handle invalid version strings
+            logging.error(f"Invalid version data received: {e}")
+            log_session(f"Update check failed due to invalid version data: {e}")
+        except Exception as e:
+            # Catch any unexpected errors
+            logging.error(f"Unexpected error during update check: {e}")
+            log_session(f"Unexpected error during update check: {e}")
 
     def toggle_theme(self, theme):
         ctk.set_appearance_mode(theme.lower())
@@ -579,15 +605,15 @@ class VideoProcessorApp:
         self.ffmpeg_entry = ctk.CTkEntry(ffmpeg_frame, placeholder_text="e.g., -vf scale=1280:720")
         if self.custom_ffmpeg_args:
             self.ffmpeg_entry.insert(0, " ".join(self.custom_ffmpeg_args))
-        self.ffmpeg_entry.pack(side=tk_LEFT, padx=5)
+        self.ffmpeg_entry.pack(side=tk.LEFT, padx=5)
 
         watermark_frame = ctk.CTkFrame(settings_frame)
         watermark_frame.pack(pady=5)
-        ctk.CTkLabel(watermark_frame, text="Watermark Text:").pack(side=tk_LEFT)
+        ctk.CTkLabel(watermark_frame, text="Watermark Text:").pack(side=tk.LEFT)
         self.watermark_entry = ctk.CTkEntry(watermark_frame, placeholder_text="Enter watermark")
         if self.watermark_text:
             self.watermark_entry.insert(0, self.watermark_text)
-        self.watermark_entry.pack(side=tk_LEFT, padx=5)
+        self.watermark_entry.pack(side=tk.LEFT, padx=5)
 
         music_settings_frame = ctk.CTkFrame(settings_frame)
         music_settings_frame.pack(pady=10)
@@ -595,42 +621,42 @@ class VideoProcessorApp:
 
         default_music_frame = ctk.CTkFrame(music_settings_frame)
         default_music_frame.pack(pady=2)
-        ctk.CTkLabel(default_music_frame, text="Default Music:").pack(side=tk_LEFT)
+        ctk.CTkLabel(default_music_frame, text="Default Music:").pack(side=tk.LEFT)
         default_path = self.music_paths.get("default")
         self.music_label_default = ctk.CTkLabel(default_music_frame, text="No music selected" if not default_path else os.path.basename(default_path))
-        self.music_label_default.pack(side=tk_LEFT, padx=5)
-        ctk.CTkButton(default_music_frame, text="Select", command=self.select_music_default).pack(side=tk_LEFT)
+        self.music_label_default.pack(side=tk.LEFT, padx=5)
+        ctk.CTkButton(default_music_frame, text="Select", command=self.select_music_default).pack(side=tk.LEFT)
 
         music_60s_frame = ctk.CTkFrame(music_settings_frame)
         music_60s_frame.pack(pady=2)
-        ctk.CTkLabel(music_60s_frame, text="Music for 60s Video:").pack(side=tk_LEFT)
+        ctk.CTkLabel(music_60s_frame, text="Music for 60s Video:").pack(side=tk.LEFT)
         path_60s = self.music_paths.get(60)
         self.music_label_60s = ctk.CTkLabel(music_60s_frame, text="No music selected" if not path_60s else os.path.basename(path_60s))
-        self.music_label_60s.pack(side=tk_LEFT, padx=5)
-        ctk.CTkButton(music_60s_frame, text="Select", command=self.select_music_60s).pack(side=tk_LEFT)
+        self.music_label_60s.pack(side=tk.LEFT, padx=5)
+        ctk.CTkButton(music_60s_frame, text="Select", command=self.select_music_60s).pack(side=tk.LEFT)
 
         music_12min_frame = ctk.CTkFrame(music_settings_frame)
         music_12min_frame.pack(pady=2)
-        ctk.CTkLabel(music_12min_frame, text="Music for 12min Video:").pack(side=tk_LEFT)
+        ctk.CTkLabel(music_12min_frame, text="Music for 12min Video:").pack(side=tk.LEFT)
         path_12min = self.music_paths.get(720)
         self.music_label_12min = ctk.CTkLabel(music_12min_frame, text="No music selected" if not path_12min else os.path.basename(path_12min))
-        self.music_label_12min.pack(side=tk_LEFT, padx=5)
-        ctk.CTkButton(music_12min_frame, text="Select", command=self.select_music_12min).pack(side=tk_LEFT)
+        self.music_label_12min.pack(side=tk.LEFT, padx=5)
+        ctk.CTkButton(music_12min_frame, text="Select", command=self.select_music_12min).pack(side=tk.LEFT)
 
         music_1h_frame = ctk.CTkFrame(music_settings_frame)
         music_1h_frame.pack(pady=2)
-        ctk.CTkLabel(music_1h_frame, text="Music for 1h Video:").pack(side=tk_LEFT)
+        ctk.CTkLabel(music_1h_frame, text="Music for 1h Video:").pack(side=tk.LEFT)
         path_1h = self.music_paths.get(3600)
         self.music_label_1h = ctk.CTkLabel(music_1h_frame, text="No music selected" if not path_1h else os.path.basename(path_1h))
-        self.music_label_1h.pack(side=tk_LEFT, padx=5)
-        ctk.CTkButton(music_1h_frame, text="Select", command=self.select_music_1h).pack(side=tk_LEFT)
+        self.music_label_1h.pack(side=tk.LEFT, padx=5)
+        ctk.CTkButton(music_1h_frame, text="Select", command=self.select_music_1h).pack(side=tk.LEFT)
 
         volume_frame = ctk.CTkFrame(music_settings_frame)
         volume_frame.pack(pady=2)
-        ctk.CTkLabel(volume_frame, text="Music Volume (0.0 - 1.0):").pack(side=tk_LEFT)
+        ctk.CTkLabel(volume_frame, text="Music Volume (0.0 - 1.0):").pack(side=tk.LEFT)
         self.music_volume_slider = ctk.CTkSlider(volume_frame, from_=0.0, to=1.0, number_of_steps=100, command=lambda v: setattr(self, 'music_volume', v))
         self.music_volume_slider.set(self.music_volume)
-        self.music_volume_slider.pack(side=tk_LEFT)
+        self.music_volume_slider.pack(side=tk.LEFT)
 
         schedule_frame = ctk.CTkFrame(settings_frame)
         schedule_frame.pack(pady=10)
@@ -653,16 +679,16 @@ class VideoProcessorApp:
         ctk.CTkButton(settings_frame, text="Reset to Default", command=self.reset_to_default).pack(pady=10)
 
         self.preview_frame = ctk.CTkFrame(self.settings_window)
-        self.preview_frame.pack(side=tk_RIGHT, padx=10, pady=10)
+        self.preview_frame.pack(side=tk.RIGHT, padx=10, pady=10)
         self.preview_label = ctk.CTkLabel(self.preview_frame, text="Select a video to enable preview", image=self.blank_ctk_image)
         self.preview_label.pack(pady=5)
 
         control_frame = ctk.CTkFrame(self.preview_frame)
         control_frame.pack(pady=5)
         self.preview_button = ctk.CTkButton(control_frame, text="Start Preview", command=self.toggle_preview, state="disabled")
-        self.preview_button.pack(side=tk_LEFT, padx=5)
+        self.preview_button.pack(side=tk.LEFT, padx=5)
         self.preview_slider = ctk.CTkSlider(control_frame, from_=0, to=0, number_of_steps=0, command=self.update_preview_frame)
-        self.preview_slider.pack(side=tk_LEFT, padx=5)
+        self.preview_slider.pack(side=tk.LEFT, padx=5)
 
         self.preview_cap = None
         self.playback_thread = None
@@ -1008,11 +1034,11 @@ class VideoProcessorApp:
         for data in self.analytics_data:
             file_frame = ctk.CTkFrame(frame)
             file_frame.pack(fill='x', pady=5)
-            ctk.CTkLabel(file_frame, text=f"File: {data['file']}").pack(side=tk_LEFT, padx=5)
-            ctk.CTkLabel(file_frame, text=f"Duration: {data['duration']}s").pack(side=tk_LEFT, padx=5)
-            ctk.CTkLabel(file_frame, text=f"Frames: {data['frames_processed']}").pack(side=tk_LEFT, padx=5)
-            ctk.CTkLabel(file_frame, text=f"Motion Events: {data['motion_events']}").pack(side=tk_LEFT, padx=5)
-            ctk.CTkLabel(file_frame, text=f"Time: {data['processing_time']:.2f}s").pack(side=tk_LEFT, padx=5)
+            ctk.CTkLabel(file_frame, text=f"File: {data['file']}").pack(side=tk.LEFT, padx=5)
+            ctk.CTkLabel(file_frame, text=f"Duration: {data['duration']}s").pack(side=tk.LEFT, padx=5)
+            ctk.CTkLabel(file_frame, text=f"Frames: {data['frames_processed']}").pack(side=tk.LEFT, padx=5)
+            ctk.CTkLabel(file_frame, text=f"Motion Events: {data['motion_events']}").pack(side=tk.LEFT, padx=5)
+            ctk.CTkLabel(file_frame, text=f"Time: {data['processing_time']:.2f}s").pack(side=tk.LEFT, padx=5)
 
         log_session("Displayed analytics dashboard")
 
@@ -1067,10 +1093,10 @@ class VideoProcessorApp:
                 file_frame = ctk.CTkFrame(self.output_frame)
                 file_frame.pack(fill='x', pady=2)
                 label = ctk.CTkLabel(file_frame, text=f"{task}: {file}")
-                label.pack(side=tk_LEFT, padx=5)
+                label.pack(side=tk.LEFT, padx=5)
                 upload_button = ctk.CTkButton(file_frame, text="Upload to YouTube")
                 upload_button.configure(command=lambda f=file, t=task, b=upload_button: self.start_upload(f, t, b))
-                upload_button.pack(side=tk_RIGHT, padx=5)
+                upload_button.pack(side=tk.RIGHT, padx=5)
             self.current_task_label.configure(text="Current Task: N/A")
             self.time_label.configure(text=f"Process Complete in {time_str}")
             self.reset_ui()
