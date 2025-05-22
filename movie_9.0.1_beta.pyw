@@ -35,7 +35,7 @@ except ImportError:
 VERSION = "9.0.1_beta"
 
 # Update channels
-UPDATE_CHANNELS = ["stable", "beta"]
+UPDATE_CHANNELS = ["Stable", "Beta"]
 
 # Create log directory
 log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log")
