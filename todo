@@ -1,7 +1,11 @@
 /*
-!Working on: Add an option to run in background mode or full utilization of PC (Make it toggeleable when processing)
+!Working on: 
+      !Add an option to run in background mode or full utilization of PC (Make it toggeleable when processing)
+
 TODO      Canceled: Error: Command '[ffmpeg', '-i', temp_final_bf816f7c39344afOb051ec52652abc19.mp4', '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100', '-c:v', 'copy', '-c:a', 'aac', '-shortest', '-y', 'D:/Sander/Videos/DayRecordings2025/BlueTit/Precessed\\Test1_60ss.mp4T returned non-zero exit status 4294967294. (When having a directory that doesn't exist)
 TODO      Check if the directory exists before running ffmpeg
 TODO      Fix default audio. If now specific music is selected, use default music.
-TODO      Show what value the volume slider is on, in % 
+
+*DONE:
+     *Show what value the volume slider is on, in % 
 */

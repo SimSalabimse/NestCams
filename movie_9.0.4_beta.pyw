@@ -635,9 +635,11 @@ class VideoProcessorApp:
         volume_frame = ctk.CTkFrame(music_settings_frame)
         volume_frame.pack(pady=2)
         ctk.CTkLabel(volume_frame, text="Music Volume (0.0 - 1.0):").pack(side=tk.LEFT)
-        self.music_volume_slider = ctk.CTkSlider(volume_frame, from_=0.0, to=1.0, number_of_steps=100, command=lambda v: setattr(self, 'music_volume', v))
+        self.music_volume_slider = ctk.CTkSlider(volume_frame, from_=0.0, to=1.0, number_of_steps=100, command=self.update_volume_label)
         self.music_volume_slider.set(self.music_volume)
         self.music_volume_slider.pack(side=tk.LEFT)
+        self.volume_value_label = ctk.CTkLabel(volume_frame, text=f"{int(self.music_volume * 100)}%")
+        self.volume_value_label.pack(side=tk.LEFT, padx=5)
 
         schedule_frame = ctk.CTkFrame(settings_frame)
         schedule_frame.pack(pady=10)
@@ -673,6 +675,12 @@ class VideoProcessorApp:
 
         if self.input_files:
             self.initialize_preview()
+
+    def update_volume_label(self, value):
+        percentage = int(float(value) * 100)
+        self.music_volume = float(value)
+        self.volume_value_label.configure(text=f"{percentage}%")
+        log_session(f"Music volume set to {percentage}%")
 
     def initialize_preview(self):
         if self.input_files and not self.preview_cap:
@@ -875,6 +883,7 @@ class VideoProcessorApp:
         self.watermark_entry.delete(0, tk.END)
         self.update_channel_var.set("Stable")
         self.update_settings(0)
+        self.update_volume_label(1.0)
         log_session("Reset settings to default values")
 
     def browse_files(self):
