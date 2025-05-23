@@ -39,9 +39,14 @@ jobs:
 
       - name: Update scripts
         run: |
-          echo "python ${{ env.LATEST_STABLE_FILE }}" > Start.bat
-          echo "python3 ${{ env.LATEST_STABLE_FILE }}" > Start.sh
-          echo "python ${{ env.LATEST_BETA_FILE }}" > Start_beta.bat
+          # Update the line in Start.bat that runs the stable Python script
+          sed -i "s/^python movie_.*\.pyw/python ${{ env.LATEST_STABLE_FILE }}/" Start.bat
+          
+          # Update the line in Start.sh that runs the stable Python script
+          sed -i "s/^python3 movie_.*\.pyw/python3 ${{ env.LATEST_STABLE_FILE }}/" Start.sh
+          
+          # Update the line in Start_beta.bat that runs the beta Python script
+          sed -i "s/^python movie_.*\.pyw/python ${{ env.LATEST_BETA_FILE }}/" Start_beta.bat
 
       - name: Commit and push changes
         run: |
