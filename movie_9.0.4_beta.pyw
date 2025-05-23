@@ -396,13 +396,13 @@ class VideoProcessorApp:
 
         self.input_files = []
         self.queue = queue.Queue()
-        self.preview_queue = queue.Queue(maxsize=5)  # Reduced size for efficiency
+        self.preview_queue = queue.Queue(maxsize=5)
         self.start_time = None
         self.preview_image = None
         self.blank_ctk_image = ctk.CTkImage(light_image=Image.new('RGB', (200, 150), (0, 0, 0)), 
                                             dark_image=Image.new('RGB', (200, 150), (0, 0, 0)), size=(200, 150))
         self.root.after(50, self.process_queue)
-        self.root.after(33, self.update_preview)  # Approx 30 FPS for GUI updates
+        self.root.after(33, self.update_preview)
 
         self.motion_threshold = 3000
         self.white_threshold = 200
@@ -678,7 +678,7 @@ class VideoProcessorApp:
         if self.input_files and not self.preview_cap:
             self.preview_cap = cv2.VideoCapture(self.input_files[0])
             if self.preview_cap.isOpened():
-                self.fps = max(self.preview_cap.get(cv2.CAP_PROP_FPS), 1)  # Ensure FPS is at least 1
+                self.fps = max(self.preview_cap.get(cv2.CAP_PROP_FPS), 1)
                 self.total_frames = int(self.preview_cap.get(cv2.CAP_PROP_FRAME_COUNT))
                 self.preview_slider.configure(to=self.total_frames - 1, number_of_steps=self.total_frames - 1)
                 duration = self.total_frames / self.fps
@@ -767,7 +767,7 @@ class VideoProcessorApp:
                     self.preview_slider.set(next_frame)
             except queue.Empty:
                 pass
-        self.root.after(33, self.update_preview)  # 33ms ~= 30 FPS
+        self.root.after(33, self.update_preview)
 
     def seek_preview(self, frame_idx):
         if not self.preview_running and self.preview_cap and self.preview_cap.isOpened():
@@ -1153,11 +1153,14 @@ class VideoProcessorApp:
 
     def get_youtube_client(self):
         if not hasattr(self, 'youtube_client'):
+            logging.info("Initializing YouTube client")
+            log_session("Initializing YouTube client")
             credentials = None
             if os.path.exists('token.pickle'):
                 try:
                     with open('token.pickle', 'rb') as token:
                         credentials = pickle.load(token)
+                    logging.info("Loaded credentials from token.pickle")
                     log_session("Loaded YouTube credentials from token.pickle")
                 except (pickle.PickleError, EOFError) as e:
                     logging.error(f"Failed to load token.pickle: {str(e)}")
@@ -1168,6 +1171,7 @@ class VideoProcessorApp:
                 if credentials and credentials.expired and credentials.refresh_token:
                     try:
                         credentials.refresh(Request())
+                        logging.info("Refreshed YouTube credentials")
                         log_session("Refreshed YouTube credentials")
                     except Exception as e:
                         logging.error(f"Failed to refresh credentials: {str(e)}")
@@ -1175,26 +1179,31 @@ class VideoProcessorApp:
                         credentials = None
                 if not credentials:
                     if not os.path.exists('client_secrets.json'):
+                        logging.error("client_secrets.json not found")
                         messagebox.showerror("Error", "client_secrets.json not found.")
                         log_session("Error: client_secrets.json not found for YouTube authentication")
                         return None
                     try:
+                        logging.info("Starting OAuth flow")
+                        log_session("Starting OAuth flow")
                         flow = InstalledAppFlow.from_client_secrets_file(
                             'client_secrets.json',
                             scopes=['https://www.googleapis.com/auth/youtube.upload']
                         )
                         credentials = flow.run_local_server(port=0)
+                        logging.info("OAuth authentication completed")
                         log_session("Authenticated with YouTube API")
                     except Exception as e:
                         logging.error(f"Failed to authenticate: {str(e)}")
                         log_session(f"Error: Failed to authenticate with YouTube API: {str(e)}")
-                        messagebox.showerror("Error", "Authentication failed.")
+                        messagebox.showerror("Error", f"Authentication failed: {str(e)}")
                         return None
                 with open('token.pickle', 'wb') as token:
                     pickle.dump(credentials, token)
+                    logging.info("Saved credentials to token.pickle")
                     log_session("Saved YouTube credentials to token.pickle")
             self.youtube_client = build('youtube', 'v3', credentials=credentials)
-            logging.info("YouTube client initialized")
+            logging.info("YouTube client initialized successfully")
             log_session("YouTube client initialized")
         return self.youtube_client
 
@@ -1217,15 +1226,24 @@ class VideoProcessorApp:
         button.configure(state="disabled", text="Uploading...")
         thread = threading.Thread(target=self.upload_to_youtube, args=(file_path, task_name, button))
         thread.start()
+        logging.info(f"Started upload thread for {file_path}")
         log_session(f"Started YouTube upload for {file_path}")
 
     def upload_to_youtube(self, file_path, task_name, button):
+        logging.info(f"Starting upload process for {file_path}")
+        log_session(f"Starting upload for {file_path}")
         max_retries = 10
         for attempt in range(max_retries):
             try:
                 youtube = self.get_youtube_client()
                 if not youtube:
+                    logging.error("YouTube client is None, aborting upload")
+                    log_session("Error: Failed to get YouTube client")
+                    self.root.after(0, lambda: messagebox.showerror("Error", "Failed to authenticate with YouTube"))
                     return
+                logging.info("YouTube client obtained successfully")
+                log_session("YouTube client obtained")
+                
                 duration_str = task_name.split()[1]
                 file_name = os.path.splitext(os.path.basename(file_path))[0]
                 title = file_name + (" #shorts" if duration_str == "60s" else "")
@@ -1235,6 +1253,9 @@ class VideoProcessorApp:
                     'snippet': {'title': title, 'description': description, 'tags': tags, 'categoryId': '22'},
                     'status': {'privacyStatus': 'unlisted'}
                 }
+                logging.info(f"Preparing to upload {file_path} with title: {title}")
+                log_session(f"Uploading {file_path} with title: {title}")
+                
                 media = MediaFileUpload(file_path, resumable=True, chunksize=512 * 1024)
                 request = youtube.videos().insert(part='snippet,status', body=request_body, media_body=media)
                 response = None
@@ -1242,18 +1263,23 @@ class VideoProcessorApp:
                     status, response = request.next_chunk()
                     if status:
                         progress = status.progress() * 100
+                        logging.info(f"Upload progress: {progress:.2f}%")
+                        log_session(f"Upload progress: {progress:.2f}%")
                         self.queue.put(("upload_progress", progress))
-                logging.info(f"Upload successful: {file_path}")
+                logging.info(f"Upload completed successfully for {file_path}")
                 log_session(f"Upload successful: {file_path}, YouTube URL: https://youtu.be/{response['id']}")
                 self.root.after(0, lambda: messagebox.showinfo("Success", f"Video uploaded: https://youtu.be/{response['id']}"))
                 break
             except Exception as e:
-                logging.error(f"Upload error: {str(e)}", exc_info=True)
-                log_session(f"Error: Upload failed: {str(e)}")
-                self.root.after(0, lambda: messagebox.showerror("Error", f"Upload failed: {str(e)}"))
-                break
+                logging.error(f"Upload failed on attempt {attempt + 1}: {str(e)}", exc_info=True)
+                log_session(f"Error: Upload failed on attempt {attempt + 1}: {str(e)}")
+                if attempt == max_retries - 1:
+                    self.root.after(0, lambda: messagebox.showerror("Error", f"Upload failed after {max_retries} attempts: {str(e)}"))
+                else:
+                    time.sleep(5)  # Wait before retrying
             finally:
                 self.root.after(0, lambda b=button: b.configure(state="normal", text="Upload to YouTube"))
+                logging.info(f"Upload attempt {attempt + 1} finalized for {file_path}")
 
     def load_preset(self):
         preset_name = self.preset_combobox.get()
