@@ -426,7 +426,7 @@ class VideoProcessorApp:
         self.preview_thread = None
         self.preview_cap = None
         self.update_channel = "Stable"
-        self.performance_mode = "Balanced"  # New default
+        self.performance_mode = "Balanced"
 
         self.music_paths = {"default": None, 60: None, 720: None, 3600: None}
         self.analytics_data = []
@@ -448,7 +448,7 @@ class VideoProcessorApp:
                 self.custom_ffmpeg_args = settings.get("custom_ffmpeg_args", None)
                 self.watermark_text = settings.get("watermark_text", None)
                 self.update_channel = settings.get("update_channel", "Stable")
-                self.performance_mode = settings.get("performance_mode", "Balanced")  # Load new setting
+                self.performance_mode = settings.get("performance_mode", "Balanced")
                 loaded_music_paths = settings.get("music_paths", {})
                 for key in self.music_paths:
                     if str(key) in loaded_music_paths:
@@ -468,7 +468,7 @@ class VideoProcessorApp:
         self.custom_ffmpeg_args = self.ffmpeg_entry.get().split() if self.ffmpeg_entry.get() else None
         self.watermark_text = self.watermark_entry.get() or None
         self.update_channel = self.update_channel_var.get()
-        self.performance_mode = self.performance_mode_var.get()  # Save new setting
+        self.performance_mode = self.performance_mode_var.get()
 
         settings = {
             "motion_threshold": self.motion_threshold,
@@ -580,7 +580,6 @@ class VideoProcessorApp:
         self.saturation_value_label = ctk.CTkLabel(settings_frame, text=f"Saturation: {self.saturation_multiplier:.1f}")
         self.saturation_value_label.pack(pady=2)
 
-        # New Performance Mode Setting
         performance_frame = ctk.CTkFrame(settings_frame)
         performance_frame.pack(pady=5)
         ctk.CTkLabel(performance_frame, text="Performance Mode:").pack(side=tk.LEFT)
@@ -996,7 +995,7 @@ class VideoProcessorApp:
                     status_callback=status_callback,
                     custom_ffmpeg_args=self.custom_ffmpeg_args,
                     watermark_text=self.watermark_text,
-                    pool=pool  # Pass shared pool
+                    pool=pool
                 )
                 if error:
                     self.queue.put(("canceled", error))
@@ -1048,7 +1047,6 @@ class VideoProcessorApp:
             task_count_queue.put(0)
             has_error = False
 
-            # Set worker counts based on performance mode
             cpu_count = os.cpu_count() or 1
             if self.performance_mode == "High":
                 max_processes = cpu_count
@@ -1238,7 +1236,7 @@ class VideoProcessorApp:
 
     def start_upload(self, file_path, task_name, button):
         if not os.path.exists(file_path):
-            messagebox.showerror("Error", ffet"Video file not found: {file_path}")
+            messagebox.showerror("Error", f"Video file not found: {file_path}")
             button.configure(state="normal", text="Upload to YouTube")
             log_session(f"Error: Video file not found for upload: {file_path}")
             return
