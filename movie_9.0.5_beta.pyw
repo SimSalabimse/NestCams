@@ -427,6 +427,9 @@ class VideoProcessorApp:
         self.preview_cap = None
         self.update_channel = "Stable"
         self.performance_mode = "Balanced"
+        self.progress_bar_mode = "Single"
+        self.all_tasks = []
+        self.task_progress = {}
 
         self.music_paths = {"default": None, 60: None, 720: None, 3600: None}
         self.analytics_data = []
@@ -449,6 +452,7 @@ class VideoProcessorApp:
                 self.watermark_text = settings.get("watermark_text", None)
                 self.update_channel = settings.get("update_channel", "Stable")
                 self.performance_mode = settings.get("performance_mode", "Balanced")
+                self.progress_bar_mode = settings.get("progress_bar_mode", "Single")
                 loaded_music_paths = settings.get("music_paths", {})
                 for key in self.music_paths:
                     if str(key) in loaded_music_paths:
@@ -469,6 +473,7 @@ class VideoProcessorApp:
         self.watermark_text = self.watermark_entry.get() or None
         self.update_channel = self.update_channel_var.get()
         self.performance_mode = self.performance_mode_var.get()
+        self.progress_bar_mode = self.progress_bar_mode_var.get()
 
         settings = {
             "motion_threshold": self.motion_threshold,
@@ -482,7 +487,8 @@ class VideoProcessorApp:
             "custom_ffmpeg_args": self.custom_ffmpeg_args,
             "watermark_text": self.watermark_text,
             "update_channel": self.update_channel,
-            "performance_mode": self.performance_mode
+            "performance_mode": self.performance_mode,
+            "progress_bar_mode": self.progress_bar_mode
         }
         with open("settings.json", "w") as f:
             json.dump(settings, f)
@@ -617,6 +623,13 @@ class VideoProcessorApp:
         if self.watermark_text:
             self.watermark_entry.insert(0, self.watermark_text)
         self.watermark_entry.pack(side=tk.LEFT, padx=5)
+
+        progress_bar_frame = ctk.CTkFrame(settings_frame)
+        progress_bar_frame.pack(pady=5)
+        ctk.CTkLabel(progress_bar_frame, text="Progress Bar Mode:").pack(side=tk.LEFT)
+        self.progress_bar_mode_var = tk.StringVar(value=self.progress_bar_mode)
+        ctk.CTkOptionMenu(progress_bar_frame, variable=self.progress_bar_mode_var, 
+                          values=["Single", "Individual"]).pack(side=tk.LEFT)
 
         music_settings_frame = ctk.CTkFrame(settings_frame)
         music_settings_frame.pack(pady=10)
@@ -897,6 +910,7 @@ class VideoProcessorApp:
         self.watermark_entry.delete(0, tk.END)
         self.update_channel_var.set("Stable")
         self.performance_mode_var.set("Balanced")
+        self.progress_bar_mode_var.set("Single")
         self.update_settings(0)
         log_session("Reset settings to default values")
 
@@ -937,20 +951,94 @@ class VideoProcessorApp:
         cancel_event.clear()
         self.start_time = time.time()
         self.analytics_data = []
+
+        selected_videos = []
+        if self.generate_60s.get():
+            selected_videos.append(("Generate 60s Video", 60))
+        if self.generate_12min.get():
+            selected_videos.append(("Generate 12min Video", 720))
+        if self.generate_1h.get():
+            selected_videos.append(("Generate 1h Video", 3600))
+        custom_duration = self.custom_duration_entry.get()
+        if custom_duration:
+            try:
+                duration = int(custom_duration)
+                if duration > 0:
+                    selected_videos.append((f"Generate {duration}s Video", duration))
+                else:
+                    raise ValueError("Duration must be positive")
+            except ValueError:
+                self.queue.put(("canceled", "Invalid custom duration"))
+                return
+
+        self.all_tasks = []
+        for file_path in self.input_files:
+            self.all_tasks.append((file_path, "motion_detection", None))
+            for task_name, duration in selected_videos:
+                self.all_tasks.append((file_path, "generate_video", duration))
+        self.task_progress = {task: 0 for task in self.all_tasks}
+
+        if self.progress_bar_mode == "Individual":
+            self.progress.pack_forget()
+            self.current_task_label.pack_forget()
+            self.time_label.pack_forget()
+            if not hasattr(self, 'progress_frame'):
+                self.progress_frame = ctk.CTkFrame(self.root)
+                self.progress_frame.pack(pady=10)
+            else:
+                for widget in self.progress_frame.winfo_children():
+                    widget.destroy()
+
+            self.overall_progress_frame = ctk.CTkFrame(self.progress_frame)
+            self.overall_progress_frame.pack(fill='x', pady=5)
+            ctk.CTkLabel(self.overall_progress_frame, text="Overall Progress").pack(side=tk.LEFT, padx=5)
+            self.overall_progress_bar = ctk.CTkProgressBar(self.overall_progress_frame, width=300)
+            self.overall_progress_bar.pack(side=tk.LEFT, padx=5)
+            self.overall_progress_bar.set(0)
+            self.overall_time_label = ctk.CTkLabel(self.overall_progress_frame, text="Estimated Time Remaining: N/A")
+            self.overall_time_label.pack(side=tk.LEFT, padx=5)
+
+            self.file_progress_widgets = {}
+            for file in self.input_files:
+                file_name = os.path.basename(file)
+                file_frame = ctk.CTkFrame(self.progress_frame)
+                file_frame.pack(fill='x', pady=2)
+                label = ctk.CTkLabel(file_frame, text=file_name)
+                label.pack(side=tk.LEFT, padx=5)
+                task_label = ctk.CTkLabel(file_frame, text="Task: N/A")
+                task_label.pack(side=tk.LEFT, padx=5)
+                progress_bar = ctk.CTkProgressBar(file_frame, width=200)
+                progress_bar.pack(side=tk.LEFT, padx=5)
+                progress_bar.set(0)
+                self.file_progress_widgets[file] = {"task_label": task_label, "progress_bar": progress_bar}
+        else:
+            self.progress.pack(pady=10)
+            self.current_task_label.pack(pady=5)
+            self.time_label.pack(pady=5)
+            self.progress.set(0)
+            if hasattr(self, 'progress_frame'):
+                self.progress_frame.pack_forget()
+
         threading.Thread(target=self.process_video_thread).start()
         log_session("Started processing thread")
 
-    def process_single_video(self, input_file, selected_videos, output_format, total_tasks, task_count_queue, pool):
+    def process_single_video(self, input_file, selected_videos, output_format, pool):
         global cancel_event
         try:
             base, _ = os.path.splitext(input_file)
             output_files = {}
-            task_count = task_count_queue.get()
 
-            self.queue.put(("task_start", f"Motion Detection - {os.path.basename(input_file)}", task_count / total_tasks * 100))
-            task_count += 1
+            task = (input_file, "motion_detection", None)
+            self.queue.put(("task_progress_update", task, 0))
+            if self.progress_bar_mode == "Individual":
+                self.queue.put(("file_task_start", input_file, "Motion Detection"))
+
             def motion_progress_callback(progress, current, total, remaining):
-                self.queue.put(("progress", progress, current, total, remaining))
+                self.queue.put(("task_progress_update", task, progress / 100))
+                if self.progress_bar_mode == "Individual":
+                    self.queue.put(("file_progress", input_file, "Motion Detection", progress, current, total, remaining))
+                else:
+                    self.queue.put(("progress", progress, current, total, remaining))
 
             selected_indices = get_selected_indices(
                 input_file, self.motion_threshold, self.white_threshold, self.black_threshold,
@@ -964,25 +1052,26 @@ class VideoProcessorApp:
                 log_session(f"Warning: No frames selected for {input_file}")
                 self.queue.put(("canceled", "No frames selected after motion detection"))
                 return None
+            self.queue.put(("task_progress_update", task, 1))
 
             for task_name, duration in selected_videos:
                 if cancel_event.is_set():
                     self.queue.put(("canceled", "User Cancellation"))
                     return None
+                task = (input_file, "generate_video", duration)
+                self.queue.put(("task_progress_update", task, 0))
+                if self.progress_bar_mode == "Individual":
+                    self.queue.put(("file_task_start", input_file, task_name))
                 output_file = f"{base}_{task_name.split()[1] if 'Generate' in task_name else duration}s.{output_format}"
                 if self.output_dir:
                     output_file = os.path.join(self.output_dir, os.path.basename(output_file))
-                self.queue.put(("task_start", f"{task_name} - {os.path.basename(input_file)}", task_count / total_tasks * 100))
-                task_count += 1
 
                 def progress_callback(progress, current, total, remaining):
-                    logging.info(f"Progress: {progress:.2f}%, {current}/{total}, remaining: {remaining:.2f}s")
-                    with thread_lock:
+                    self.queue.put(("task_progress_update", task, progress / 100))
+                    if self.progress_bar_mode == "Individual":
+                        self.queue.put(("file_progress", input_file, task_name, progress, current, total, remaining))
+                    else:
                         self.queue.put(("progress", progress, current, total, remaining))
-
-                def status_callback(status):
-                    logging.info(f"Status update: {status}")
-                    self.queue.put(("status", status))
 
                 error, frames_processed, motion_events, proc_time = generate_output_video(
                     input_file, output_file, duration, selected_indices,
@@ -992,7 +1081,7 @@ class VideoProcessorApp:
                     progress_callback=progress_callback,
                     music_paths=self.music_paths,
                     music_volume=self.music_volume,
-                    status_callback=status_callback,
+                    status_callback=lambda status: self.queue.put(("status", status)),
                     custom_ffmpeg_args=self.custom_ffmpeg_args,
                     watermark_text=self.watermark_text,
                     pool=pool
@@ -1001,6 +1090,7 @@ class VideoProcessorApp:
                     self.queue.put(("canceled", error))
                     return None
                 else:
+                    self.queue.put(("task_progress_update", task, 1))
                     output_files[task_name] = output_file
                     self.analytics_data.append({
                         "file": os.path.basename(input_file),
@@ -1009,7 +1099,6 @@ class VideoProcessorApp:
                         "motion_events": motion_events,
                         "processing_time": proc_time
                     })
-            task_count_queue.put(task_count)
             return output_files
         except Exception as e:
             logging.error(f"Error in process_single_video: {str(e)}", exc_info=True)
@@ -1042,9 +1131,6 @@ class VideoProcessorApp:
                     return
 
             output_format = self.output_format_var.get()
-            total_tasks = len(self.input_files) * (len(selected_videos) + 1)
-            task_count_queue = queue.Queue()
-            task_count_queue.put(0)
             has_error = False
 
             cpu_count = os.cpu_count() or 1
@@ -1060,7 +1146,7 @@ class VideoProcessorApp:
 
             with Pool(processes=max_processes) as pool:
                 with ThreadPoolExecutor(max_workers=max_threads) as executor:
-                    futures = [executor.submit(self.process_single_video, input_file, selected_videos, output_format, total_tasks, task_count_queue, pool) 
+                    futures = [executor.submit(self.process_single_video, input_file, selected_videos, output_format, pool) 
                               for input_file in self.input_files]
                     for future in futures:
                         result = future.result()
@@ -1118,29 +1204,60 @@ class VideoProcessorApp:
 
     def handle_message(self, message):
         msg_type, *args = message
-        if msg_type == "task_start":
+        if msg_type == "task_progress_update":
+            task, progress = args
+            if task in self.task_progress:
+                self.task_progress[task] = progress
+                overall_progress = sum(self.task_progress.values()) / len(self.all_tasks) * 100
+                if self.progress_bar_mode == "Single":
+                    self.progress.set(overall_progress / 100)
+                    if overall_progress > 0:
+                        elapsed = time.time() - self.start_time
+                        total_time = elapsed / (overall_progress / 100)
+                        remaining = total_time - elapsed
+                        remaining_min = remaining / 60
+                        self.time_label.configure(text=f"Est. Time Remaining: {remaining_min:.2f} min ({overall_progress:.2f}% complete)")
+                    else:
+                        self.time_label.configure(text="Estimating time...")
+                elif self.progress_bar_mode == "Individual":
+                    self.overall_progress_bar.set(overall_progress / 100)
+                    if overall_progress > 0:
+                        elapsed = time.time() - self.start_time
+                        total_time = elapsed / (overall_progress / 100)
+                        remaining = total_time - elapsed
+                        remaining_min = remaining / 60
+                        self.overall_time_label.configure(text=f"Est. Time Remaining: {remaining_min:.2f} min ({overall_progress:.2f}% complete)")
+                    else:
+                        self.overall_time_label.configure(text="Estimating time...")
+        elif msg_type == "file_task_start":
+            file_path, task_name = args
+            if file_path in self.file_progress_widgets:
+                widgets = self.file_progress_widgets[file_path]
+                widgets["task_label"].configure(text=f"Task: {task_name}")
+                widgets["progress_bar"].set(0)
+        elif msg_type == "file_progress":
+            file_path, task_name, progress_value, current, total, remaining = args
+            if file_path in self.file_progress_widgets:
+                widgets = self.file_progress_widgets[file_path]
+                widgets["progress_bar"].set(progress_value / 100)
+        elif msg_type == "task_start":
             task_name, progress = args
             self.current_task_label.configure(text=f"Current Task: {task_name}")
             self.progress.set(progress / 100)
             self.time_label.configure(text="Estimating time...")
-            logging.info(f"Task started: {task_name}")
-            log_session(f"UI Update: Task started: {task_name}")
         elif msg_type == "progress":
             progress_value, current, total, remaining = args
             progress_value = min(max(progress_value, 0), 100)
             self.progress.set(progress_value / 100)
             remaining_min = remaining / 60 if remaining > 0 else 0
             self.time_label.configure(text=f"Est. Time Remaining: {remaining_min:.2f} min ({progress_value:.2f}% complete)")
-            log_session(f"UI Update: Progress {progress_value:.2f}%, Est. Time Remaining: {remaining_min:.2f} min")
         elif msg_type == "status":
             status_text = args[0]
             self.current_task_label.configure(text=status_text)
-            log_session(f"UI Update: Status: {status_text}")
         elif msg_type == "upload_progress":
             progress_value = args[0]
             self.progress.set(progress_value / 100)
             self.time_label.configure(text=f"Uploading: {progress_value:.2f}%")
-            log_session(f"UI Update: Upload progress {progress_value:.2f}%")
         elif msg_type == "complete":
             output_files, elapsed = args
             minutes = int(elapsed // 60)
@@ -1159,8 +1276,6 @@ class VideoProcessorApp:
             self.current_task_label.configure(text="Current Task: N/A")
             self.time_label.configure(text=f"Process Complete in {time_str}")
             self.reset_ui()
-            logging.info(f"Processing completed in {time_str}")
-            log_session(f"UI Update: Processing completed in {time_str}")
         elif msg_type == "canceled":
             reason = args[0]
             elapsed = time.time() - self.start_time if self.start_time else 0
@@ -1174,8 +1289,6 @@ class VideoProcessorApp:
             self.current_task_label.configure(text="Current Task: N/A")
             self.time_label.configure(text=f"Process Canceled in {time_str}")
             self.reset_ui()
-            logging.info(f"Processing canceled: {reason}")
-            log_session(f"UI Update: Processing canceled: {reason} in {time_str}")
 
     def reset_ui(self):
         self.switch_60s.configure(state="normal")
@@ -1185,7 +1298,12 @@ class VideoProcessorApp:
         self.browse_button.configure(state="normal")
         self.start_button.configure(state="normal" if self.input_files else "disabled")
         self.cancel_button.configure(state="disabled")
-        log_session("UI reset to initial state")
+        if self.progress_bar_mode == "Individual" and hasattr(self, 'progress_frame'):
+            self.progress_frame.pack(pady=10)
+        else:
+            self.progress.pack(pady=10)
+            self.current_task_label.pack(pady=5)
+            self.time_label.pack(pady=5)
 
     def get_youtube_client(self):
         if not hasattr(self, 'youtube_client'):
