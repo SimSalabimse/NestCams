@@ -9,3 +9,4 @@ speedtest-cli
 requests
 schedule
 packaging
+psutil
