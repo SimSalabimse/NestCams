@@ -17,7 +17,7 @@ from datetime import datetime
 import tempfile
 import schedule
 from multiprocessing import Pool, Event
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures import ThreadPoolExecutor
 from packaging import version
 import functools
 import psutil
@@ -25,10 +25,15 @@ import psutil
 VERSION = "9.0.4_beta"
 UPDATE_CHANNELS = ["Stable", "Beta"]
 
+# Setup logging
 log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log")
 os.makedirs(log_dir, exist_ok=True)
 
-logging.basicConfig(filename=os.path.join(log_dir, 'processor_log.txt'), level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    filename=os.path.join(log_dir, 'processor_log.txt'),
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 session_log_file = os.path.join(log_dir, f"session_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
 session_logger = logging.getLogger('session')
 session_handler = logging.FileHandler(session_log_file)
@@ -45,9 +50,11 @@ BATCH_SIZE = 4
 WORKER_PROCESSES = 2
 
 def log_session(message):
+    """Log a message to the session log file."""
     session_logger.info(message)
 
 def check_system_specs():
+    """Adjust processing parameters based on system specifications."""
     global FRAME_SIZE, BATCH_SIZE, WORKER_PROCESSES
     cpu_cores = os.cpu_count() or 1
     total_ram_gb = psutil.virtual_memory().total / (1024 ** 3)
@@ -70,6 +77,7 @@ def check_system_specs():
     log_session(f"Configured: Frame size={FRAME_SIZE}, Batch size={BATCH_SIZE}, Workers={WORKER_PROCESSES}")
 
 def compute_motion_score(prev_frame, current_frame, threshold=30):
+    """Compute the motion score between two frames."""
     if prev_frame is None or current_frame is None:
         return 0
     prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
@@ -80,11 +88,13 @@ def compute_motion_score(prev_frame, current_frame, threshold=30):
     return score
 
 def is_white_or_black_frame(frame, white_threshold=200, black_threshold=50):
+    """Check if a frame is predominantly white or black."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     mean_brightness = np.mean(gray)
     return mean_brightness > white_threshold or mean_brightness < black_threshold
 
 def normalize_frame(frame, clip_limit=1.0, saturation_multiplier=1.1):
+    """Normalize and enhance a frame's visual quality."""
     try:
         available_memory = psutil.virtual_memory().available
         frame_size = frame.nbytes
@@ -114,11 +124,10 @@ def normalize_frame(frame, clip_limit=1.0, saturation_multiplier=1.1):
         return None
 
 def get_selected_indices(input_path, motion_threshold, white_threshold, black_threshold, progress_callback=None):
+    """Identify frames with significant motion."""
     global cancel_event
     logging.info(f"Starting motion detection for {input_path}")
-    log_session(f"Starting 
-   
-motion detection for {input_path}")
+    log_session(f"Starting motion detection for {input_path}")
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
         logging.error(f"Cannot open video file: {input_path}")
@@ -158,6 +167,7 @@ motion detection for {input_path}")
     return selected_indices
 
 def process_frame_batch(input_path, clip_limit, saturation_multiplier, rotate, temp_dir, tasks):
+    """Process a batch of frames in parallel."""
     global cancel_event
     if cancel_event.is_set():
         return []
@@ -185,9 +195,10 @@ def process_frame_batch(input_path, clip_limit, saturation_multiplier, rotate, t
     cap.release()
     return results
 
-def generate_output_video(input_path, output_path, desired_duration, selected_indices, clip_limit=1.0, saturation_multiplier=1.1, 
-                         output_format='mp4', progress_callback=None, music_paths=None, music_volume=1.0, 
+def generate_output_video(input_path, output_path, desired_duration, selected_indices, clip_limit=1.0, saturation_multiplier=1.1,
+                         output_format='mp4', progress_callback=None, music_paths=None, music_volume=1.0,
                          status_callback=None, custom_ffmpeg_args=None, watermark_text=None):
+    """Generate a video from selected frames with optional enhancements."""
     try:
         logging.info(f"Generating video: {output_path}")
         log_session(f"Generating video: {output_path}")
@@ -315,6 +326,7 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
         return f"Error: {str(e)}", 0, 0, 0
 
 class VideoProcessorApp:
+    """Main application class for video processing GUI."""
     def __init__(self, root):
         self.root = root
         self.root.title(f"Bird Box Video Processor v{VERSION}")
@@ -392,8 +404,11 @@ class VideoProcessorApp:
         self.preview_queue = queue.Queue(maxsize=5)
         self.start_time = None
         self.preview_image = None
-        self.blank_ctk_image = ctk.CTkImage(light_image=Image.new('RGB', (200, 150), (0, 0, 0)), 
-                                            dark_image=Image.new('RGB', (200, 150), (0, 0, 0)), size=(200, 150))
+        self.blank_ctk_image = ctk.CTkImage(
+            light_image=Image.new('RGB', (200, 150), (0, 0, 0)),
+            dark_image=Image.new('RGB', (200, 150), (0, 0, 0)),
+            size=(200, 150)
+        )
         self.root.after(50, self.process_queue)
         self.root.after(33, self.update_preview)
 
@@ -418,6 +433,7 @@ class VideoProcessorApp:
         self.check_for_updates()
 
     def load_settings(self):
+        """Load settings from a JSON file."""
         try:
             with open("settings.json", "r") as f:
                 settings = json.load(f)
@@ -441,6 +457,7 @@ class VideoProcessorApp:
             log_session("Could not load settings, using defaults")
 
     def save_settings(self):
+        """Save current settings to a JSON file."""
         self.motion_threshold = int(self.motion_slider.get())
         self.white_threshold = int(self.white_slider.get())
         self.black_threshold = int(self.black_slider.get())
@@ -470,6 +487,7 @@ class VideoProcessorApp:
         log_session("Saved settings and closed settings window")
 
     def load_presets(self):
+        """Load preset configurations from a JSON file."""
         try:
             with open("presets.json", "r") as f:
                 self.presets = json.load(f)
@@ -480,6 +498,7 @@ class VideoProcessorApp:
             self.presets = {}
 
     def check_for_updates(self):
+        """Check for software updates based on the selected channel."""
         try:
             channel = self.update_channel
             url = f"https://raw.githubusercontent.com/SimSalabimse/NestCams/main/{channel}_version.txt"
@@ -509,10 +528,12 @@ class VideoProcessorApp:
             log_session(f"Unexpected error during update check: {e}")
 
     def toggle_theme(self, theme):
+        """Switch between light and dark themes."""
         ctk.set_appearance_mode(theme.lower())
         log_session(f"Theme changed to {theme}")
 
     def open_settings(self):
+        """Open the settings and preview window."""
         self.settings_window = ctk.CTkToplevel(self.root)
         self.settings_window.title("Settings & Preview")
         self.settings_window.protocol("WM_DELETE_WINDOW", self.on_settings_close)
@@ -670,12 +691,14 @@ class VideoProcessorApp:
             self.initialize_preview()
 
     def update_volume_label(self, value):
+        """Update the music volume label."""
         percentage = int(float(value) * 100)
         self.music_volume = float(value)
         self.volume_value_label.configure(text=f"{percentage}%")
         log_session(f"Music volume set to {percentage}%")
 
     def initialize_preview(self):
+        """Initialize video preview for settings window."""
         if self.input_files and not self.preview_cap:
             self.preview_cap = cv2.VideoCapture(self.input_files[0])
             if self.preview_cap.isOpened():
@@ -692,12 +715,14 @@ class VideoProcessorApp:
                 self.preview_cap = None
 
     def toggle_preview(self):
+        """Toggle video preview on or off."""
         if self.preview_running:
             self.stop_preview()
         else:
             self.start_preview()
 
     def start_preview(self):
+        """Start the video preview."""
         if not self.input_files or self.preview_running:
             log_session("Cannot start preview: no input files or already running")
             return
@@ -713,6 +738,7 @@ class VideoProcessorApp:
         log_session("Preview started")
 
     def stop_preview(self):
+        """Stop the video preview."""
         if not self.preview_running:
             log_session("Preview not running")
             return
@@ -733,6 +759,7 @@ class VideoProcessorApp:
         log_session("Preview stopped")
 
     def read_frames(self):
+        """Read frames for preview in a separate thread."""
         log_session("Started frame reading thread")
         frame_interval = 1 / self.fps
         while self.preview_running and self.preview_cap.isOpened():
@@ -759,6 +786,7 @@ class VideoProcessorApp:
         log_session("Frame reading thread stopped")
 
     def update_preview(self):
+        """Update the preview display."""
         if self.preview_running and self.settings_window.winfo_exists():
             try:
                 ctk_img, next_frame = self.preview_queue.get_nowait()
@@ -771,6 +799,7 @@ class VideoProcessorApp:
         self.root.after(33, self.update_preview)
 
     def seek_preview(self, frame_idx):
+        """Seek to a specific frame in the preview."""
         if not self.preview_running and self.preview_cap and self.preview_cap.isOpened():
             frame_idx = int(frame_idx)
             self.preview_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
@@ -786,6 +815,7 @@ class VideoProcessorApp:
                 log_session(f"Failed to seek to frame {frame_idx}")
 
     def select_output_dir(self):
+        """Select an output directory for processed videos."""
         directory = filedialog.askdirectory()
         if directory:
             self.output_dir = directory
@@ -793,6 +823,7 @@ class VideoProcessorApp:
             log_session(f"Selected output directory: {directory}")
 
     def set_schedule(self):
+        """Schedule video processing for a specific time."""
         time_str = self.schedule_entry.get()
         try:
             schedule.every().day.at(time_str).do(self.start_processing)
@@ -804,17 +835,20 @@ class VideoProcessorApp:
             log_session(f"Failed to schedule processing: Invalid time format {time_str}")
 
     def run_scheduler(self):
+        """Run the scheduled tasks."""
         while True:
             schedule.run_pending()
             time.sleep(60)
 
     def on_settings_close(self):
+        """Handle settings window closure."""
         if self.preview_running:
             self.stop_preview()
         self.settings_window.destroy()
         log_session("Settings window closed")
 
     def update_settings(self, value):
+        """Update settings values from sliders."""
         self.motion_threshold = int(self.motion_slider.get())
         self.white_threshold = int(self.white_slider.get())
         self.black_threshold = int(self.black_slider.get())
@@ -828,6 +862,7 @@ class VideoProcessorApp:
         log_session(f"Updated settings: Motion={self.motion_threshold}, White={self.white_threshold}, Black={self.black_threshold}, Clip={self.clip_limit}, Saturation={self.saturation_multiplier}")
 
     def select_music_default(self):
+        """Select default background music."""
         path = filedialog.askopenfilename(filetypes=[("Audio files", "*.mp3 *.wav *.ogg")])
         if path:
             self.music_paths["default"] = path
@@ -837,6 +872,7 @@ class VideoProcessorApp:
             self.music_label_default.configure(text="No music selected")
 
     def select_music_60s(self):
+        """Select music for 60s videos."""
         path = filedialog.askopenfilename(filetypes=[("Audio files", "*.mp3 *.wav *.ogg")])
         if path:
             self.music_paths[60] = path
@@ -846,6 +882,7 @@ class VideoProcessorApp:
             self.music_label_60s.configure(text="No music selected")
 
     def select_music_12min(self):
+        """Select music for 12-minute videos."""
         path = filedialog.askopenfilename(filetypes=[("Audio files", "*.mp3 *.wav *.ogg")])
         if path:
             self.music_paths[720] = path
@@ -855,7 +892,9 @@ class VideoProcessorApp:
             self.music_label_12min.configure(text="No music selected")
 
     def select_music_1h(self):
-        path = filedialog.askopen İsmet:
+        """Select music for 1-hour videos."""
+        path = filedialog.askopenfilename(filetypes=[("Audio files", "*.mp3 *.wav *.ogg")])
+        if path:
             self.music_paths[3600] = path
             self.music_label_1h.configure(text=os.path.basename(path))
         else:
@@ -863,6 +902,7 @@ class VideoProcessorApp:
             self.music_label_1h.configure(text="No music selected")
 
     def reset_to_default(self):
+        """Reset settings to default values."""
         self.motion_slider.set(3000)
         self.white_slider.set(200)
         self.black_slider.set(50)
@@ -879,6 +919,7 @@ class VideoProcessorApp:
         log_session("Reset settings to default values")
 
     def browse_files(self):
+        """Browse and select input video files."""
         self.input_files = filedialog.askopenfilenames(filetypes=[("Video files", "*.mp4 *.avi *.mkv *.mov *.wmv")])
         if self.input_files:
             self.label.configure(text=f"Selected: {len(self.input_files)} file(s)")
@@ -890,6 +931,7 @@ class VideoProcessorApp:
             log_session("No files selected")
 
     def start_processing(self):
+        """Start the video processing workflow."""
         global cancel_event
         logging.info("start_processing called")
         log_session("Starting video processing")
@@ -919,6 +961,7 @@ class VideoProcessorApp:
         log_session("Started processing thread")
 
     def process_single_video(self, input_file, selected_videos, output_format, total_tasks, task_count_queue):
+        """Process a single video file."""
         global cancel_event
         try:
             base, _ = os.path.splitext(input_file)
@@ -995,6 +1038,7 @@ class VideoProcessorApp:
             return None
 
     def process_video_thread(self):
+        """Thread to process all selected videos."""
         global cancel_event
         try:
             logging.info("process_video_thread started")
@@ -1025,7 +1069,7 @@ class VideoProcessorApp:
             has_error = False
 
             with ThreadPoolExecutor(max_workers=WORKER_PROCESSES) as executor:
-                futures = [executor.submit(self.process_single_video, input_file, selected_videos, output_format, total_tasks, task_count_queue) 
+                futures = [executor.submit(self.process_single_video, input_file, selected_videos, output_format, total_tasks, task_count_queue)
                            for input_file in self.input_files]
                 for future in futures:
                     result = future.result()
@@ -1046,6 +1090,7 @@ class VideoProcessorApp:
             self.queue.put(("canceled", str(e)))
 
     def show_analytics_dashboard(self):
+        """Display analytics after processing."""
         analytics_window = ctk.CTkToplevel(self.root)
         analytics_window.title("Processing Analytics")
         analytics_window.geometry("600x400")
@@ -1067,12 +1112,14 @@ class VideoProcessorApp:
         log_session("Displayed analytics dashboard")
 
     def cancel_processing(self):
+        """Cancel ongoing video processing."""
         global cancel_event
         cancel_event.set()
         logging.info("Cancel requested")
         log_session("Cancel processing requested")
 
     def process_queue(self):
+        """Process messages from the queue for UI updates."""
         try:
             while True:
                 message = self.queue.get_nowait()
@@ -1082,6 +1129,7 @@ class VideoProcessorApp:
         self.root.after(50, self.process_queue)
 
     def handle_message(self, message):
+        """Handle different types of queue messages."""
         msg_type, *args = message
         if msg_type == "task_start":
             task_name, progress = args
@@ -1135,6 +1183,7 @@ class VideoProcessorApp:
             log_session(f"UI Update: Processing canceled: {reason} in {time_str}")
 
     def reset_ui(self):
+        """Reset UI elements to their initial state."""
         self.switch_60s.configure(state="normal")
         self.switch_12min.configure(state="normal")
         self.switch_1h.configure(state="normal")
@@ -1145,6 +1194,7 @@ class VideoProcessorApp:
         log_session("UI reset to initial state")
 
     def load_preset(self):
+        """Load a preset configuration."""
         preset_name = self.preset_combobox.get()
         if preset_name in self.presets:
             preset = self.presets[preset_name]
@@ -1157,6 +1207,7 @@ class VideoProcessorApp:
             log_session(f"Loaded preset: {preset_name}")
 
     def save_preset(self):
+        """Save current settings as a preset."""
         preset_name = self.preset_name_entry.get()
         if preset_name:
             self.presets[preset_name] = {
