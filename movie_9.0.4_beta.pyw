@@ -22,11 +22,13 @@ from datetime import datetime
 import tempfile
 import schedule
 from multiprocessing import Pool, Event
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from packaging import version
 import functools
 import psutil
 import mmap
+import httplib2
+import google_auth_httplib2
 
 try:
     import speedtest
@@ -107,13 +109,25 @@ def check_network_stability():
             logging.warning(f"Network ping failed: Status {response.status_code}")
             log_session(f"Network ping failed: Status {response.status_code}")
             return False
-        if speedtest is None:
-            logging.info("No speedtest module, using ping only")
-            log_session("No speedtest module, using ping only")
-            return True
+    except Exception as e:
+        logging.warning(f"Network ping failed: {str(e)}")
+        log_session(f"Network ping failed: {str(e)}")
+        return False
+    
+    if speedtest is None:
+        logging.info("No speedtest module, relying on ping")
+        log_session("No speedtest module, relying on ping")
+        return True
+    
+    def run_speedtest():
         st = speedtest.Speedtest()
         st.get_best_server()
-        upload_speed = st.upload() / 1_000_000
+        return st.upload() / 1_000_000
+    
+    try:
+        with ThreadPoolExecutor() as executor:
+            future = executor.submit(run_speedtest)
+            upload_speed = future.result(timeout=30)
         if upload_speed < 1.0:
             logging.warning(f"Upload speed too low: {upload_speed:.2f} Mbps")
             log_session(f"Upload speed too low: {upload_speed:.2f} Mbps")
@@ -121,10 +135,14 @@ def check_network_stability():
         logging.info(f"Network stable: Upload speed {upload_speed:.2f} Mbps")
         log_session(f"Network stable: Upload speed {upload_speed:.2f} Mbps")
         return True
+    except FuturesTimeoutError:
+        logging.warning("Speed test timed out, relying on ping")
+        log_session("Speed test timed out, relying on ping")
+        return True
     except Exception as e:
-        logging.warning(f"Network check failed: {str(e)}")
-        log_session(f"Network check failed: {str(e)}")
-        return False
+        logging.warning(f"Speed test failed: {str(e)}, relying on ping")
+        log_session(f"Speed test failed: {str(e)}, relying on ping")
+        return True
 
 def get_selected_indices(input_path, motion_threshold, white_threshold, black_threshold, progress_callback=None):
     global cancel_event
@@ -302,7 +320,7 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
                 if status_callback:
                     status_callback("Adding silent audio...")
                 logging.info("Adding silent audio with FFmpeg")
-                log_session("Adding silent audio with FFmpeg")
+                log_session("Adding silent audio with_FFmpeg")
                 cmd = [
                     'ffmpeg', '-i', temp_final_path, '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
                     '-c:v', 'copy', '-c:a', 'aac', '-shortest', '-y', output_path
@@ -643,7 +661,7 @@ class VideoProcessorApp:
 
         schedule_frame = ctk.CTkFrame(settings_frame)
         schedule_frame.pack(pady=10)
-        ctk.CTkLabel(schedule_frame, text="Schedule Processing (HH:MM):").pack(pady=2)
+        ctk.CTkLabel(schedule_frame, text="Schedule Processing (HH:MM):").pack(side=tk.LEFT)
         self.schedule_entry = ctk.CTkEntry(schedule_frame, placeholder_text="e.g., 14:30")
         self.schedule_entry.pack(pady=2)
         ctk.CTkButton(schedule_frame, text="Set Schedule", command=self.set_schedule).pack(pady=2)
@@ -1114,6 +1132,10 @@ class VideoProcessorApp:
             self.progress.set(progress_value / 100)
             self.time_label.configure(text=f"Uploading: {progress_value:.2f}%")
             log_session(f"UI Update: Upload progress {progress_value:.2f}%")
+        elif msg_type == "upload_status":
+            status_text = args[0]
+            self.current_task_label.configure(text=status_text)
+            log_session(f"UI Update: Upload status: {status_text}")
         elif msg_type == "complete":
             output_files, elapsed = args
             minutes = int(elapsed // 60)
@@ -1207,88 +1229,104 @@ class VideoProcessorApp:
                         log_session(f"Error: Failed to authenticate with YouTube API: {str(e)}")
                         messagebox.showerror("Error", f"Authentication failed: {str(e)}")
                         return None
-                with open('token.pickle', 'wb') as token:
-                    pickle.dump(credentials, token)
-                    logging.info("Saved credentials to token.pickle")
-                    log_session("Saved YouTube credentials to token.pickle")
-            self.youtube_client = build('youtube', 'v3', credentials=credentials)
+            with open('token.pickle', 'wb') as token:
+                pickle.dump(credentials, token)
+                logging.info("Saved credentials to token.pickle")
+                log_session("Saved YouTube credentials to token.pickle")
+            http = httplib2.Http(timeout=120)
+            authorized_http = google_auth_httplib2.AuthorizedHttp(credentials, http=http)
+            self.youtube_client = build('youtube', 'v3', http=authorized_http)
             logging.info("YouTube client initialized successfully")
             log_session("YouTube client initialized")
         return self.youtube_client
 
     def start_upload(self, file_path, task_name, button):
-        if not os.path.exists(file_path):
-            messagebox.showerror("Error", f"Video file not found: {file_path}")
-            button.configure(state="normal", text="Upload to YouTube")
-            log_session(f"Error: Video file not found for upload: {file_path}")
-            return
-        if not validate_video_file(file_path):
-            messagebox.showerror("Error", "Invalid or corrupted video file.")
-            button.configure(state="normal", text="Upload to YouTube")
-            log_session(f"Error: Invalid or corrupted video file for upload: {file_path}")
-            return
-        if not check_network_stability():
-            messagebox.showerror("Error", "Network unstable.")
-            button.configure(state="normal", text="Upload to YouTube")
-            log_session("Error: Network unstable, cannot upload to YouTube")
-            return
-        button.configure(state="disabled", text="Uploading...")
+        button.configure(state="disabled", text="Checking...")
         thread = threading.Thread(target=self.upload_to_youtube, args=(file_path, task_name, button))
         thread.start()
         logging.info(f"Started upload thread for {file_path}")
         log_session(f"Started YouTube upload for {file_path}")
 
     def upload_to_youtube(self, file_path, task_name, button):
-        logging.info(f"Starting upload process for {file_path}")
-        log_session(f"Starting upload for {file_path}")
-        max_retries = 10
-        for attempt in range(max_retries):
-            try:
-                youtube = self.get_youtube_client()
-                if not youtube:
-                    logging.error("YouTube client is None, aborting upload")
-                    log_session("Error: Failed to get YouTube client")
-                    self.root.after(0, lambda: messagebox.showerror("Error", "Failed to authenticate with YouTube"))
-                    return
-                logging.info("YouTube client obtained successfully")
-                log_session("YouTube client obtained")
-                
-                duration_str = task_name.split()[1]
-                file_name = os.path.splitext(os.path.basename(file_path))[0]
-                title = file_name + (" #shorts" if duration_str == "60s" else "")
-                description = "Uploaded via Bird Box Video Processor" + (" #shorts" if duration_str == "60s" else "")
-                tags = ['bird', 'nature', 'video'] + (['#shorts'] if duration_str == "60s" else [])
-                request_body = {
-                    'snippet': {'title': title, 'description': description, 'tags': tags, 'categoryId': '22'},
-                    'status': {'privacyStatus': 'unlisted'}
-                }
-                logging.info(f"Preparing to upload {file_path} with title: {title}")
-                log_session(f"Uploading {file_path} with title: {title}")
-                
-                media = MediaFileUpload(file_path, resumable=True, chunksize=512 * 1024)
-                request = youtube.videos().insert(part='snippet,status', body=request_body, media_body=media)
-                response = None
-                while response is None:
-                    status, response = request.next_chunk()
-                    if status:
-                        progress = status.progress() * 100
-                        logging.info(f"Upload progress: {progress:.2f}%")
-                        log_session(f"Upload progress: {progress:.2f}%")
-                        self.queue.put(("upload_progress", progress))
-                logging.info(f"Upload completed successfully for {file_path}")
-                log_session(f"Upload successful: {file_path}, YouTube URL: https://youtu.be/{response['id']}")
-                self.root.after(0, lambda: messagebox.showinfo("Success", f"Video uploaded: https://youtu.be/{response['id']}"))
-                break
-            except Exception as e:
-                logging.error(f"Upload failed on attempt {attempt + 1}: {str(e)}", exc_info=True)
-                log_session(f"Error: Upload failed on attempt {attempt + 1}: {str(e)}")
-                if attempt == max_retries - 1:
-                    self.root.after(0, lambda: messagebox.showerror("Error", f"Upload failed after {max_retries} attempts: {str(e)}"))
-                else:
-                    time.sleep(5)  # Wait before retrying
-            finally:
+        try:
+            if not os.path.exists(file_path):
+                self.root.after(0, lambda: messagebox.showerror("Error", f"Video file not found: {file_path}"))
                 self.root.after(0, lambda b=button: b.configure(state="normal", text="Upload to YouTube"))
-                logging.info(f"Upload attempt {attempt + 1} finalized for {file_path}")
+                log_session(f"Error: Video file not found for upload: {file_path}")
+                return
+            if not validate_video_file(file_path):
+                self.root.after(0, lambda: messagebox.showerror("Error", "Invalid or corrupted video file."))
+                self.root.after(0, lambda b=button: b.configure(state="normal", text="Upload to YouTube"))
+                log_session(f"Error: Invalid or corrupted video file for upload: {file_path}")
+                return
+            if not check_network_stability():
+                self.root.after(0, lambda: messagebox.showerror("Error", "Network unstable."))
+                self.root.after(0, lambda b=button: b.configure(state="normal", text="Upload to YouTube"))
+                log_session("Error: Network unstable, cannot upload to YouTube")
+                return
+            
+            self.root.after(0, lambda b=button: b.configure(text="Uploading..."))
+            
+            youtube = self.get_youtube_client()
+            if not youtube:
+                logging.error("YouTube client is None, aborting upload")
+                log_session("Error: Failed to get YouTube client")
+                self.root.after(0, lambda: messagebox.showerror("Error", "Failed to authenticate with YouTube"))
+                self.root.after(0, lambda b=button: b.configure(state="normal", text="Upload to YouTube"))
+                return
+            
+            duration_str = task_name.split()[1]
+            file_name = os.path.splitext(os.path.basename(file_path))[0]
+            title = file_name + (" #shorts" if duration_str == "60s" else "")
+            description = "Uploaded via Bird Box Video Processor" + (" #shorts" if duration_str == "60s" else "")
+            tags = ['bird', 'nature', 'video'] + (['#shorts'] if duration_str == "60s" else [])
+            request_body = {
+                'snippet': {'title': title, 'description': description, 'tags': tags, 'categoryId': '22'},
+                'status': {'privacyStatus': 'unlisted'}
+            }
+            logging.info(f"Preparing to upload {file_path} with title: {title}")
+            log_session(f"Uploading {file_path} with title: {title}")
+            
+            media = MediaFileUpload(file_path, resumable=True, chunksize=512 * 1024)
+            request = youtube.videos().insert(part='snippet,status', body=request_body, media_body=media)
+            
+            self.queue.put(("upload_status", "Starting upload to YouTube..."))
+            max_retries = 3
+            initial_retry_delay = 5
+            retry_delay = initial_retry_delay
+            for attempt in range(max_retries):
+                try:
+                    response = None
+                    while response is None:
+                        status, response = request.next_chunk()
+                        if status:
+                            progress = status.progress() * 100
+                            logging.info(f"Upload progress: {progress:.2f}%")
+                            log_session(f"Upload progress: {progress:.2f}%")
+                            self.queue.put(("upload_progress", progress))
+                    self.queue.put(("upload_status", "Upload completed successfully"))
+                    logging.info(f"Upload completed successfully for {file_path}")
+                    log_session(f"Upload successful: {file_path}, YouTube URL: https://youtu.be/{response['id']}")
+                    self.root.after(0, lambda: messagebox.showinfo("Success", f"Video uploaded: https://youtu.be/{response['id']}"))
+                    break
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        self.queue.put(("upload_status", f"Upload failed, retrying in {retry_delay} seconds... (Attempt {attempt + 1}/{max_retries})"))
+                        logging.warning(f"Upload attempt {attempt + 1} failed: {str(e)}, retrying in {retry_delay} seconds...")
+                        log_session(f"Upload attempt {attempt + 1} failed: {str(e)}, retrying in {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                    else:
+                        logging.error(f"Upload failed after {max_retries} attempts: {str(e)}")
+                        log_session(f"Error: Upload failed after {max_retries} attempts: {str(e)}")
+                        self.root.after(0, lambda: messagebox.showerror("Error", f"Upload failed: {str(e)}"))
+        except Exception as e:
+            error_message = str(e)
+            logging.error(f"Unexpected error during upload: {error_message}", exc_info=True)
+            log_session(f"Error: Unexpected error during upload: {error_message}")
+            self.root.after(0, lambda: messagebox.showerror("Error", f"Unexpected error: {error_message}"))
+        finally:
+            self.root.after(0, lambda b=button: b.configure(state="normal", text="Upload to YouTube"))
 
     def load_preset(self):
         preset_name = self.preset_combobox.get()
