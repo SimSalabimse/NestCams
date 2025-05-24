@@ -10,6 +10,11 @@ import queue
 import uuid
 import json
 from PIL import Image
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+import pickle
 import subprocess
 import logging
 import requests
@@ -21,6 +26,12 @@ from concurrent.futures import ThreadPoolExecutor
 from packaging import version
 import functools
 import psutil
+
+try:
+    import speedtest
+except ImportError:
+    speedtest = None
+    logging.warning("speedtest module not found. Network stability checks will be limited.")
 
 VERSION = "9.0.4_beta"
 UPDATE_CHANNELS = ["Stable", "Beta"]
@@ -122,6 +133,46 @@ def normalize_frame(frame, clip_limit=1.0, saturation_multiplier=1.1):
         logging.error(f"Error in normalize_frame: {str(e)}")
         log_session(f"Error in normalize_frame: {str(e)}")
         return None
+
+def validate_video_file(file_path):
+    """Validate the integrity of a video file using FFmpeg."""
+    try:
+        cmd = ['ffmpeg', '-i', file_path, '-f', 'null', '-']
+        subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, check=True)
+        logging.info(f"Validated video file: {file_path}")
+        log_session(f"Validated video file: {file_path}")
+        return True
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Validation failed for {file_path}: {e.stderr.decode()}")
+        log_session(f"Validation failed for {file_path}: {e.stderr.decode()}")
+        return False
+
+def check_network_stability():
+    """Check network stability for YouTube upload."""
+    try:
+        response = requests.get("https://www.google.com", timeout=5)
+        if response.status_code != 200:
+            logging.warning(f"Network ping failed: Status {response.status_code}")
+            log_session(f"Network ping failed: Status {response.status_code}")
+            return False
+        if speedtest is None:
+            logging.info("No speedtest module, using ping only")
+            log_session("No speedtest module, using ping only")
+            return True
+        st = speedtest.Speedtest()
+        st.get_best_server()
+        upload_speed = st.upload() / 1_000_000  # Convert to Mbps
+        if upload_speed < 1.0:
+            logging.warning(f"Upload speed too low: {upload_speed:.2f} Mbps")
+            log_session(f"Upload speed too low: {upload_speed:.2f} Mbps")
+            return False
+        logging.info(f"Network stable: Upload speed {upload_speed:.2f} Mbps")
+        log_session(f"Network stable: Upload speed {upload_speed:.2f} Mbps")
+        return True
+    except Exception as e:
+        logging.warning(f"Network check failed: {str(e)}")
+        log_session(f"Network check failed: {str(e)}")
+        return False
 
 def get_selected_indices(input_path, motion_threshold, white_threshold, black_threshold, progress_callback=None):
     """Identify frames with significant motion."""
@@ -326,7 +377,7 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
         return f"Error: {str(e)}", 0, 0, 0
 
 class VideoProcessorApp:
-    """Main application class for video processing GUI."""
+    """Main application class for video processing GUI with YouTube upload."""
     def __init__(self, root):
         self.root = root
         self.root.title(f"Bird Box Video Processor v{VERSION}")
@@ -1149,6 +1200,11 @@ class VideoProcessorApp:
             status_text = args[0]
             self.current_task_label.configure(text=status_text)
             log_session(f"UI Update: Status: {status_text}")
+        elif msg_type == "upload_progress":
+            progress_value = args[0]
+            self.progress.set(progress_value / 100)
+            self.time_label.configure(text=f"Uploading: {progress_value:.2f}%")
+            log_session(f"UI Update: Upload progress {progress_value:.2f}%")
         elif msg_type == "complete":
             output_files, elapsed = args
             minutes = int(elapsed // 60)
@@ -1161,6 +1217,9 @@ class VideoProcessorApp:
                 file_frame.pack(fill='x', pady=2)
                 label = ctk.CTkLabel(file_frame, text=f"{task}: {file}")
                 label.pack(side=tk.LEFT, padx=5)
+                upload_button = ctk.CTkButton(file_frame, text="Upload to YouTube")
+                upload_button.configure(command=lambda f=file, t=task, b=upload_button: self.start_upload(f, t, b))
+                upload_button.pack(side=tk.RIGHT, padx=5)
             self.current_task_label.configure(text="Current Task: N/A")
             self.time_label.configure(text=f"Process Complete in {time_str}")
             self.reset_ui()
@@ -1192,6 +1251,139 @@ class VideoProcessorApp:
         self.start_button.configure(state="normal" if self.input_files else "disabled")
         self.cancel_button.configure(state="disabled")
         log_session("UI reset to initial state")
+
+    def get_youtube_client(self):
+        """Authenticate and return a YouTube API client."""
+        if not hasattr(self, 'youtube_client'):
+            logging.info("Initializing YouTube client")
+            log_session("Initializing YouTube client")
+            credentials = None
+            if os.path.exists('token.pickle'):
+                try:
+                    with open('token.pickle', 'rb') as token:
+                        credentials = pickle.load(token)
+                    logging.info("Loaded credentials from token.pickle")
+                    log_session("Loaded YouTube credentials from token.pickle")
+                except (pickle.PickleError, EOFError) as e:
+                    logging.error(f"Failed to load token.pickle: {str(e)}")
+                    log_session(f"Error: Failed to load token.pickle: {str(e)}")
+                    os.remove('token.pickle')
+                    credentials = None
+            if not credentials or not credentials.valid:
+                if credentials and credentials.expired and credentials.refresh_token:
+                    try:
+                        credentials.refresh(Request())
+                        logging.info("Refreshed YouTube credentials")
+                        log_session("Refreshed YouTube credentials")
+                    except Exception as e:
+                        logging.error(f"Failed to refresh credentials: {str(e)}")
+                        log_session(f"Error: Failed to refresh credentials: {str(e)}")
+                        credentials = None
+                if not credentials:
+                    if not os.path.exists('client_secrets.json'):
+                        logging.error("client_secrets.json not found")
+                        messagebox.showerror("Error", "client_secrets.json not found.")
+                        log_session("Error: client_secrets.json not found for YouTube authentication")
+                        return None
+                    try:
+                        logging.info("Starting OAuth flow")
+                        log_session("Starting OAuth flow")
+                        flow = InstalledAppFlow.from_client_secrets_file(
+                            'client_secrets.json',
+                            scopes=['https://www.googleapis.com/auth/youtube.upload']
+                        )
+                        credentials = flow.run_local_server(port=0)
+                        logging.info("OAuth authentication completed")
+                        log_session("Authenticated with YouTube API")
+                    except Exception as e:
+                        logging.error(f"Failed to authenticate: {str(e)}")
+                        log_session(f"Error: Failed to authenticate with YouTube API: {str(e)}")
+                        messagebox.showerror("Error", f"Authentication failed: {str(e)}")
+                        return None
+                with open('token.pickle', 'wb') as token:
+                    pickle.dump(credentials, token)
+                    logging.info("Saved credentials to token.pickle")
+                    log_session("Saved YouTube credentials to token.pickle")
+            self.youtube_client = build('youtube', 'v3', credentials=credentials)
+            logging.info("YouTube client initialized successfully")
+            log_session("YouTube client initialized")
+        return self.youtube_client
+
+    def start_upload(self, file_path, task_name, button):
+        """Initiate the YouTube upload process."""
+        if not os.path.exists(file_path):
+            messagebox.showerror("Error", f"Video file not found: {file_path}")
+            button.configure(state="normal", text="Upload to YouTube")
+            log_session(f"Error: Video file not found for upload: {file_path}")
+            return
+        if not validate_video_file(file_path):
+            messagebox.showerror("Error", "Invalid or corrupted video file.")
+            button.configure(state="normal", text="Upload to YouTube")
+            log_session(f"Error: Invalid or corrupted video file for upload: {file_path}")
+            return
+        if not check_network_stability():
+            messagebox.showerror("Error", "Network unstable.")
+            button.configure(state="normal", text="Upload to YouTube")
+            log_session("Error: Network unstable, cannot upload to YouTube")
+            return
+        button.configure(state="disabled", text="Uploading...")
+        thread = threading.Thread(target=self.upload_to_youtube, args=(file_path, task_name, button))
+        thread.start()
+        logging.info(f"Started upload thread for {file_path}")
+        log_session(f"Started YouTube upload for {file_path}")
+
+    def upload_to_youtube(self, file_path, task_name, button):
+        """Upload a video to YouTube with progress updates."""
+        logging.info(f"Starting upload process for {file_path}")
+        log_session(f"Starting upload for {file_path}")
+        max_retries = 10
+        for attempt in range(max_retries):
+            try:
+                youtube = self.get_youtube_client()
+                if not youtube:
+                    logging.error("YouTube client is None, aborting upload")
+                    log_session("Error: Failed to get YouTube client")
+                    self.root.after(0, lambda: messagebox.showerror("Error", "Failed to authenticate with YouTube"))
+                    return
+                logging.info("YouTube client obtained successfully")
+                log_session("YouTube client obtained")
+                
+                duration_str = task_name.split()[1]
+                file_name = os.path.splitext(os.path.basename(file_path))[0]
+                title = file_name + (" #shorts" if duration_str == "60s" else "")
+                description = "Uploaded via Bird Box Video Processor" + (" #shorts" if duration_str == "60s" else "")
+                tags = ['bird', 'nature', 'video'] + (['#shorts'] if duration_str == "60s" else [])
+                request_body = {
+                    'snippet': {'title': title, 'description': description, 'tags': tags, 'categoryId': '22'},
+                    'status': {'privacyStatus': 'unlisted'}
+                }
+                logging.info(f"Preparing to upload {file_path} with title: {title}")
+                log_session(f"Uploading {file_path} with title: {title}")
+                
+                media = MediaFileUpload(file_path, resumable=True, chunksize=512 * 1024)
+                request = youtube.videos().insert(part='snippet,status', body=request_body, media_body=media)
+                response = None
+                while response is None:
+                    status, response = request.next_chunk()
+                    if status:
+                        progress = status.progress() * 100
+                        logging.info(f"Upload progress: {progress:.2f}%")
+                        log_session(f"Upload progress: {progress:.2f}%")
+                        self.queue.put(("upload_progress", progress))
+                logging.info(f"Upload completed successfully for {file_path}")
+                log_session(f"Upload successful: {file_path}, YouTube URL: https://youtu.be/{response['id']}")
+                self.root.after(0, lambda: messagebox.showinfo("Success", f"Video uploaded: https://youtu.be/{response['id']}"))
+                break
+            except Exception as e:
+                logging.error(f"Upload failed on attempt {attempt + 1}: {str(e)}", exc_info=True)
+                log_session(f"Error: Upload failed on attempt {attempt + 1}: {str(e)}")
+                if attempt == max_retries - 1:
+                    self.root.after(0, lambda: messagebox.showerror("Error", f"Upload failed after {max_retries} attempts: {str(e)}"))
+                else:
+                    time.sleep(5)  # Wait before retrying
+            finally:
+                self.root.after(0, lambda b=button: b.configure(state="normal", text="Upload to YouTube"))
+                logging.info(f"Upload attempt {attempt + 1} finalized for {file_path}")
 
     def load_preset(self):
         """Load a preset configuration."""
