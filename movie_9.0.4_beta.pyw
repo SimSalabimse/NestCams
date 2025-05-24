@@ -52,8 +52,35 @@ session_logger.setLevel(logging.INFO)
 thread_lock = threading.Lock()
 cancel_event = Event()
 
+# Global variables for dynamic configuration
+FRAME_SIZE = (640, 360)
+BATCH_SIZE = 4
+WORKER_PROCESSES = 2
+
 def log_session(message):
     session_logger.info(message)
+
+def check_system_specs():
+    global FRAME_SIZE, BATCH_SIZE, WORKER_PROCESSES
+    cpu_cores = os.cpu_count() or 1  # Default to 1 if None
+    total_ram_gb = psutil.virtual_memory().total / (1024 ** 3)  # Convert bytes to GB
+
+    if total_ram_gb < 8:
+        FRAME_SIZE = (320, 180)
+        BATCH_SIZE = max(1, cpu_cores // 2)
+        WORKER_PROCESSES = 1
+    elif total_ram_gb < 16:
+        FRAME_SIZE = (640, 360)
+        BATCH_SIZE = max(2, cpu_cores // 2)
+        WORKER_PROCESSES = min(2, cpu_cores)
+    else:
+        FRAME_SIZE = (1280, 720)
+        BATCH_SIZE = max(4, cpu_cores)
+        WORKER_PROCESSES = min(4, cpu_cores)
+
+    logging.info(f"System specs: CPU cores={cpu_cores}, RAM={total_ram_gb:.2f} GB")
+    logging.info(f"Configured: Frame size={FRAME_SIZE}, Batch size={BATCH_SIZE}, Workers={WORKER_PROCESSES}")
+    log_session(f"Configured based on system specs: Frame size={FRAME_SIZE}, Batch size={BATCH_SIZE}, Workers={WORKER_PROCESSES}")
 
 def compute_motion_score(prev_frame, current_frame, threshold=30):
     if prev_frame is None or current_frame is None:
@@ -72,15 +99,13 @@ def is_white_or_black_frame(frame, white_threshold=200, black_threshold=50):
 
 def normalize_frame(frame, clip_limit=1.0, saturation_multiplier=1.1):
     try:
-        # Check available memory before processing
         available_memory = psutil.virtual_memory().available
         frame_size = frame.nbytes
         if frame_size > available_memory * 0.5:
             logging.warning(f"Frame size {frame_size} exceeds 50% of available memory {available_memory}")
             return None
 
-        # Resize to a fixed smaller size to reduce memory usage
-        frame = cv2.resize(frame, (640, 360), interpolation=cv2.INTER_AREA)
+        frame = cv2.resize(frame, FRAME_SIZE, interpolation=cv2.INTER_AREA)
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
         clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
@@ -180,7 +205,7 @@ def get_selected_indices(input_path, motion_threshold, white_threshold, black_th
         if not ret:
             logging.warning(f"Failed to read frame {frame_idx} from {input_path}")
             break
-        frame_resized = cv2.resize(frame, (640, 360))
+        frame_resized = cv2.resize(frame, FRAME_SIZE)
         if prev_frame_resized is not None:
             motion_score = compute_motion_score(prev_frame_resized, frame_resized)
             if motion_score > motion_threshold and not is_white_or_black_frame(frame_resized, white_threshold, black_threshold):
@@ -264,10 +289,9 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
             logging.info("Saving processed frames")
             log_session("Saving processed frames")
             frame_tasks = [(idx, i) for i, idx in enumerate(final_indices)]
-            batch_size = max(1, len(frame_tasks) // (os.cpu_count() or 1))
-            task_batches = [frame_tasks[i:i + batch_size] for i in range(0, len(frame_tasks), batch_size)]
+            task_batches = [frame_tasks[i:i + BATCH_SIZE] for i in range(0, len(frame_tasks), BATCH_SIZE)]
             
-            with Pool(processes=min(os.cpu_count(), 4)) as pool:
+            with Pool(processes=WORKER_PROCESSES) as pool:
                 partial_process_frame_batch = functools.partial(
                     process_frame_batch,
                     input_path,
@@ -365,6 +389,8 @@ class VideoProcessorApp:
         self.root.resizable(True, True)
         self.root.geometry("800x600")
 
+        check_system_specs()  # Configure settings based on system specs
+
         self.theme_var = tk.StringVar(value="Dark")
         theme_frame = ctk.CTkFrame(root)
         theme_frame.pack(pady=5)
@@ -402,7 +428,7 @@ class VideoProcessorApp:
         self.settings_button.pack(pady=5)
 
         self.browse_button = ctk.CTkButton(root, text="Browse", command=self.browse_files)
-        self.browe_button.pack(pady=5)
+        self.browse_button.pack(pady=5)
 
         self.start_button = ctk.CTkButton(root, text="Start Processing", command=self.start_processing, state="disabled")
         self.start_button.pack(pady=5)
@@ -1064,7 +1090,7 @@ class VideoProcessorApp:
             task_count_queue.put(0)
             has_error = False
 
-            with ThreadPoolExecutor(max_workers=min(os.cpu_count(), 4)) as executor:
+            with ThreadPoolExecutor(max_workers=WORKER_PROCESSES) as executor:
                 futures = [executor.submit(self.process_single_video, input_file, selected_videos, output_format, total_tasks, task_count_queue) 
                            for input_file in self.input_files]
                 for future in futures:
