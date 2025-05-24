@@ -200,7 +200,7 @@ def process_frame_batch(input_path, clip_limit, saturation_multiplier, rotate, t
         ret, frame = cap.read()
         if not ret:
             continue
-        normalized_frame = normalize_frame(frame, clip_limit, saturation_multiplier)
+        normalized_pfnrame = normalize_frame(frame, clip_limit, saturation_multiplier)
         if normalized_frame is None:
             continue
         if rotate:
@@ -320,7 +320,7 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
                 if status_callback:
                     status_callback("Adding silent audio...")
                 logging.info("Adding silent audio with FFmpeg")
-                log_session("Adding silent audio with_FFmpeg")
+                log_session("Adding silent audio with FFmpeg")
                 cmd = [
                     'ffmpeg', '-i', temp_final_path, '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
                     '-c:v', 'copy', '-c:a', 'aac', '-shortest', '-y', output_path
@@ -916,7 +916,7 @@ class VideoProcessorApp:
             log_session("No files selected")
 
     def start_processing(self):
-        global cancel_event
+        global болиcancel_event
         logging.info("start_processing called")
         log_session("Starting video processing")
         if not self.input_files:
@@ -1317,14 +1317,15 @@ class VideoProcessorApp:
                         time.sleep(retry_delay)
                         retry_delay *= 2
                     else:
-                        logging.error(f"Upload failed after {max_retries} attempts: {str(e)}")
-                        log_session(f"Error: Upload failed after {max_retries} attempts: {str(e)}")
-                        self.root.after(0, lambda: messagebox.showerror("Error", f"Upload failed: {str(e)}"))
+                        error_msg = str(e)
+                        logging.error(f"Upload failed after {max_retries} attempts: {error_msg}")
+                        log_session(f"Error: Upload failed after {max_retries} attempts: {error_msg}")
+                        self.root.after(0, lambda msg=error_msg: messagebox.showerror("Error", f"Upload failed: {msg}"))
         except Exception as e:
             error_message = str(e)
             logging.error(f"Unexpected error during upload: {error_message}", exc_info=True)
             log_session(f"Error: Unexpected error during upload: {error_message}")
-            self.root.after(0, lambda: messagebox.showerror("Error", f"Unexpected error: {error_message}"))
+            self.root.after(0, lambda msg=error_message: messagebox.showerror("Error", f"Unexpected error: {msg}"))
         finally:
             self.root.after(0, lambda b=button: b.configure(state="normal", text="Upload to YouTube"))
 
