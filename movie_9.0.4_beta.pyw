@@ -26,7 +26,6 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from packaging import version
 import functools
 import psutil
-import mmap
 import httplib2
 import google_auth_httplib2
 
@@ -73,7 +72,15 @@ def is_white_or_black_frame(frame, white_threshold=200, black_threshold=50):
 
 def normalize_frame(frame, clip_limit=1.0, saturation_multiplier=1.1):
     try:
-        frame = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2))
+        # Check available memory before processing
+        available_memory = psutil.virtual_memory().available
+        frame_size = frame.nbytes
+        if frame_size > available_memory * 0.5:
+            logging.warning(f"Frame size {frame_size} exceeds 50% of available memory {available_memory}")
+            return None
+
+        # Resize to a fixed smaller size to reduce memory usage
+        frame = cv2.resize(frame, (640, 360), interpolation=cv2.INTER_AREA)
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
         clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
@@ -88,6 +95,10 @@ def normalize_frame(frame, clip_limit=1.0, saturation_multiplier=1.1):
     except MemoryError:
         logging.error("MemoryError in normalize_frame")
         log_session("Error: Memory issue while normalizing frame")
+        return None
+    except Exception as e:
+        logging.error(f"Error in normalize_frame: {str(e)}")
+        log_session(f"Error in normalize_frame: {str(e)}")
         return None
 
 def validate_video_file(file_path):
@@ -192,15 +203,18 @@ def process_frame_batch(input_path, clip_limit, saturation_multiplier, rotate, t
         return []
     results = []
     cap = cv2.VideoCapture(input_path)
+    if not cap.isOpened():
+        logging.error(f"Cannot open video file in process_frame_batch: {input_path}")
+        return results
     for frame_idx, order in tasks:
         if cancel_event.is_set():
             cap.release()
-            return []
+            return results
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = cap.read()
         if not ret:
             continue
-        normalized_pfnrame = normalize_frame(frame, clip_limit, saturation_multiplier)
+        normalized_frame = normalize_frame(frame, clip_limit, saturation_multiplier)
         if normalized_frame is None:
             continue
         if rotate:
@@ -388,7 +402,7 @@ class VideoProcessorApp:
         self.settings_button.pack(pady=5)
 
         self.browse_button = ctk.CTkButton(root, text="Browse", command=self.browse_files)
-        self.browse_button.pack(pady=5)
+        self.browe_button.pack(pady=5)
 
         self.start_button = ctk.CTkButton(root, text="Start Processing", command=self.start_processing, state="disabled")
         self.start_button.pack(pady=5)
@@ -916,7 +930,7 @@ class VideoProcessorApp:
             log_session("No files selected")
 
     def start_processing(self):
-        global болиcancel_event
+        global cancel_event
         logging.info("start_processing called")
         log_session("Starting video processing")
         if not self.input_files:
