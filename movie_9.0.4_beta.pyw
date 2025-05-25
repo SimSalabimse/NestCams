@@ -312,8 +312,8 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
 
             num_frames = frame_counter
             new_fps = num_frames / desired_duration if num_frames < target_frames_count else fps
-            logging.info(f"Adjusting frame rate to {new_fps:.2f} fps")
-            log_session(f"Adjusting frame rate to {new_fps:.2f} fps")
+            logging.info(f"Parameters: num_frames={num_frames}, target_frames_count={target_frames_count}, new_fps={new_fps:.2f}")
+            log_session(f"Parameters: num_frames={num_frames}, target_frames_count={target_frames_count}, new_fps={new_fps:.2f}")
 
             if status_callback:
                 status_callback("Creating video from frames...")
@@ -327,7 +327,7 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
                 cmd.extend(['-c:v', 'h264_nvenc', '-preset', 'fast'])
             except subprocess.CalledProcessError:
                 cmd.extend(['-c:v', 'libx264', '-preset', 'fast'])
-            cmd.extend(['-pix_fmt', 'yuv420p'])
+            cmd.extend(['-pix_fmt', 'yuv420p', '-r', str(new_fps)])  # Explicitly set output frame rate
             if watermark_text:
                 cmd.extend(['-vf', f'drawtext=text={watermark_text}:fontcolor=white:fontsize=24:x=10:y=10'])
             if custom_ffmpeg_args:
@@ -337,6 +337,12 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
             logging.info("Video created from frames")
             log_session("Video created from frames")
 
+            # Probe temp video duration
+            probe_cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', temp_final_path]
+            temp_duration = float(subprocess.check_output(probe_cmd).strip())
+            logging.info(f"Temp video duration: {temp_duration:.2f} seconds")
+            log_session(f"Temp video duration: {temp_duration:.2f} seconds")
+
             music_path = music_paths.get(desired_duration, music_paths.get("default")) if music_paths else None
             if music_path and os.path.exists(music_path):
                 if status_callback:
@@ -344,7 +350,7 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
                 logging.info("Adding music with FFmpeg")
                 log_session("Adding music with FFmpeg")
                 cmd = [
-                    'ffmpeg', '-i', temp_final_path, '-i', music_path,
+                    'ffmpeg', '-i', temp_final_path, '-stream_loop', '-1', '-i', music_path,
                     '-filter_complex', f"[1:a]volume={music_volume}[a]",
                     '-map', '0:v', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac', '-shortest', '-y', output_path
                 ]
@@ -363,6 +369,12 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
                 subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
                 logging.info(f"Silent audio added to {output_path}")
                 log_session(f"Silent audio added to {output_path}")
+
+            # Probe final video duration
+            probe_cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', output_path]
+            final_duration = float(subprocess.check_output(probe_cmd).strip())
+            logging.info(f"Final video duration: {final_duration:.2f} seconds")
+            log_session(f"Final video duration: {final_duration:.2f} seconds")
 
             os.remove(temp_final_path)
             if progress_callback:
