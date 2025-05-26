@@ -235,13 +235,20 @@ def process_frame_batch(input_path, clip_limit, saturation_multiplier, rotate, t
     cap.release()
     return results
 
+def probe_video_resolution(video_path):
+    """Probe the resolution of a video file using FFmpeg."""
+    cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', video_path]
+    output = subprocess.check_output(cmd).decode().strip()
+    width, height = map(int, output.split(','))
+    return width, height
+
 def generate_output_video(input_path, output_path, desired_duration, selected_indices, output_resolution, clip_limit=1.0, saturation_multiplier=1.1,
                          output_format='mp4', progress_callback=None, music_paths=None, music_volume=1.0,
                          status_callback=None, custom_ffmpeg_args=None, watermark_text=None):
     """Generate a video from selected frames with optional enhancements."""
     try:
-        logging.info(f"Generating video: {output_path}")
-        log_session(f"Generating video: {output_path}")
+        logging.info(f"Generating video: {output_path} with resolution {output_resolution}")
+        log_session(f"Generating video: {output_path} with resolution {output_resolution}")
         if status_callback:
             status_callback("Opening video file...")
         cap = cv2.VideoCapture(input_path)
@@ -259,7 +266,8 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
             log_session(f"Error: Invalid video properties: total_frames={total_frames}, fps={fps}")
             return "Invalid video properties", 0, 0, 0
         
-        rotate = False  # Disabled by default for horizontal 1920x1080
+        # Rotate short videos (≤ 60s) to vertical orientation
+        rotate = desired_duration <= 60
         start_time = time.time()
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -300,6 +308,13 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
                 log_session("Warning: No frames saved for the final video")
                 return "No frames written after processing", 0, 0, 0
 
+            # Verify first frame size
+            if frame_counter > 0:
+                first_frame_path = os.path.join(temp_dir, 'frame_0000.jpg')
+                with Image.open(first_frame_path) as img:
+                    logging.info(f"First frame size: {img.size}")
+                    log_session(f"First frame size: {img.size}")
+
             num_frames = frame_counter
             new_fps = num_frames / desired_duration if num_frames < target_frames_count else fps
             logging.info(f"Parameters: num_frames={num_frames}, target_frames_count={target_frames_count}, new_fps={new_fps:.2f}")
@@ -311,7 +326,7 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
             log_session("Creating video with FFmpeg")
             temp_final_path = f"temp_final_{uuid.uuid4().hex}.{output_format}"
             
-            cmd = ['ffmpeg', '-framerate', str(new_fps), '-i', os.path.join(temp_dir, 'frame_%04d.jpg')]
+            cmd = ['ffmpeg', '-framerate', str(new_fps), '-i', os.path.join(temp_dir, 'frame_%04d.jpg'), '-s', f"{output_resolution[0]}x{output_resolution[1]}"]
             try:
                 subprocess.run(['ffmpeg', '-hwaccels'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
                 cmd.extend(['-c:v', 'h264_nvenc', '-preset', 'fast'])
@@ -327,11 +342,10 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
             logging.info("Video created from frames")
             log_session("Video created from frames")
 
-            # Probe temp video duration
-            probe_cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', temp_final_path]
-            temp_duration = float(subprocess.check_output(probe_cmd).strip())
-            logging.info(f"Temp video duration: {temp_duration:.2f} seconds")
-            log_session(f"Temp video duration: {temp_duration:.2f} seconds")
+            # Probe temp video resolution
+            width, height = probe_video_resolution(temp_final_path)
+            logging.info(f"Temp video resolution: {width}x{height}")
+            log_session(f"Temp video resolution: {width}x{height}")
 
             music_path = music_paths.get(desired_duration, music_paths.get("default")) if music_paths else None
             if music_path and os.path.exists(music_path):
@@ -360,11 +374,10 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
                 logging.info(f"Silent audio added to {output_path}")
                 log_session(f"Silent audio added to {output_path}")
 
-            # Probe final video duration
-            probe_cmd = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'default=noprint_wrappers=1:nokey=1', output_path]
-            final_duration = float(subprocess.check_output(probe_cmd).strip())
-            logging.info(f"Final video duration: {final_duration:.2f} seconds")
-            log_session(f"Final video duration: {final_duration:.2f} seconds")
+            # Probe final video resolution
+            width, height = probe_video_resolution(output_path)
+            logging.info(f"Final video resolution: {width}x{height}")
+            log_session(f"Final video resolution: {width}x{height}")
 
             os.remove(temp_final_path)
             if progress_callback:
