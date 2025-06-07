@@ -1096,7 +1096,7 @@ class VideoProcessorApp:
             log_session("Processing thread started")
             selected_videos = []
             if self.generate_60s.get():
-                selected_videos.append(("Generate 60s Video", 60))
+                selected_videos.append(("Generate 60s Video", 59))  # Changed from 60 to 59
             if self.generate_12min.get():
                 selected_videos.append(("Generate 12min Video", 720))
             if self.generate_1h.get():
@@ -1203,7 +1203,7 @@ class VideoProcessorApp:
         elif msg_type == "upload_progress":
             progress_value = args[0]
             self.progress.set(progress_value / 100)
-            self.time_label.configure(text=f"Uploading: {progress_value:.2f}%")
+            self.time_label.configure(text=f"Uploading: {progress_value:. nemo2f}%")
             log_session(f"UI Update: Upload progress {progress_value:.2f}%")
         elif msg_type == "complete":
             output_files, elapsed = args
