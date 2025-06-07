@@ -56,7 +56,6 @@ thread_lock = threading.Lock()
 cancel_event = Event()
 
 # Global variables for dynamic configuration
-FRAME_SIZE = (640, 360)
 BATCH_SIZE = 4
 WORKER_PROCESSES = 2
 
@@ -66,26 +65,26 @@ def log_session(message):
 
 def check_system_specs():
     """Adjust processing parameters based on system specifications."""
-    global FRAME_SIZE, BATCH_SIZE, WORKER_PROCESSES
+    global BATCH_SIZE, WORKER_PROCESSES
     cpu_cores = os.cpu_count() or 1
     total_ram_gb = psutil.virtual_memory().total / (1024 ** 3)
 
     if total_ram_gb < 8:
-        FRAME_SIZE = (320, 180)
         BATCH_SIZE = max(1, cpu_cores // 2)
         WORKER_PROCESSES = 1
     elif total_ram_gb < 16:
-        FRAME_SIZE = (640, 360)
         BATCH_SIZE = max(2, cpu_cores // 2)
         WORKER_PROCESSES = min(2, cpu_cores)
-    else:
-        FRAME_SIZE = (1280, 720)
+    elif total_ram_gb < 32:
         BATCH_SIZE = max(4, cpu_cores)
         WORKER_PROCESSES = min(4, cpu_cores)
+    else:  # Optimized for 64 GB RAM
+        BATCH_SIZE = max(8, cpu_cores * 2)
+        WORKER_PROCESSES = min(8, cpu_cores)
 
     logging.info(f"System specs: CPU cores={cpu_cores}, RAM={total_ram_gb:.2f} GB")
-    logging.info(f"Configured: Frame size={FRAME_SIZE}, Batch size={BATCH_SIZE}, Workers={WORKER_PROCESSES}")
-    log_session(f"Configured: Frame size={FRAME_SIZE}, Batch size={BATCH_SIZE}, Workers={WORKER_PROCESSES}")
+    logging.info(f"Configured: Batch size={BATCH_SIZE}, Workers={WORKER_PROCESSES}")
+    log_session(f"Configured: Batch size={BATCH_SIZE}, Workers={WORKER_PROCESSES}")
 
 def compute_motion_score(prev_frame, current_frame, threshold=30):
     """Compute the motion score between two frames."""
@@ -104,16 +103,10 @@ def is_white_or_black_frame(frame, white_threshold=200, black_threshold=50):
     mean_brightness = np.mean(gray)
     return mean_brightness > white_threshold or mean_brightness < black_threshold
 
-def normalize_frame(frame, clip_limit=1.0, saturation_multiplier=1.1):
+def normalize_frame(frame, output_resolution, clip_limit=1.0, saturation_multiplier=1.1):
     """Normalize and enhance a frame's visual quality."""
     try:
-        available_memory = psutil.virtual_memory().available
-        frame_size = frame.nbytes
-        if frame_size > available_memory * 0.5:
-            logging.warning(f"Frame size {frame_size} exceeds 50% of available memory {available_memory}")
-            return None
-
-        frame = cv2.resize(frame, FRAME_SIZE, interpolation=cv2.INTER_AREA)
+        frame = cv2.resize(frame, output_resolution, interpolation=cv2.INTER_AREA)
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
         clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
@@ -125,10 +118,6 @@ def normalize_frame(frame, clip_limit=1.0, saturation_multiplier=1.1):
         s = cv2.multiply(s, saturation_multiplier, dtype=cv2.CV_8U)
         hsv_enhanced = cv2.merge((h, s, v))
         return cv2.cvtColor(hsv_enhanced, cv2.COLOR_HSV2BGR)
-    except MemoryError:
-        logging.error("MemoryError in normalize_frame")
-        log_session("Error: Memory issue while normalizing frame")
-        return None
     except Exception as e:
         logging.error(f"Error in normalize_frame: {str(e)}")
         log_session(f"Error in normalize_frame: {str(e)}")
@@ -200,7 +189,7 @@ def get_selected_indices(input_path, motion_threshold, white_threshold, black_th
         if not ret:
             logging.warning(f"Failed to read frame {frame_idx} from {input_path}")
             break
-        frame_resized = cv2.resize(frame, FRAME_SIZE)
+        frame_resized = cv2.resize(frame, (640, 360))  # Fixed size for motion detection
         if prev_frame_resized is not None:
             motion_score = compute_motion_score(prev_frame_resized, frame_resized)
             if motion_score > motion_threshold and not is_white_or_black_frame(frame_resized, white_threshold, black_threshold):
@@ -217,7 +206,7 @@ def get_selected_indices(input_path, motion_threshold, white_threshold, black_th
     log_session(f"Motion detection completed for {input_path}, {len(selected_indices)} frames selected")
     return selected_indices
 
-def process_frame_batch(input_path, clip_limit, saturation_multiplier, rotate, temp_dir, tasks):
+def process_frame_batch(input_path, clip_limit, saturation_multiplier, rotate, temp_dir, tasks, output_resolution):
     """Process a batch of frames in parallel."""
     global cancel_event
     if cancel_event.is_set():
@@ -235,7 +224,7 @@ def process_frame_batch(input_path, clip_limit, saturation_multiplier, rotate, t
         ret, frame = cap.read()
         if not ret:
             continue
-        normalized_frame = normalize_frame(frame, clip_limit, saturation_multiplier)
+        normalized_frame = normalize_frame(frame, output_resolution, clip_limit, saturation_multiplier)
         if normalized_frame is None:
             continue
         if rotate:
@@ -246,13 +235,20 @@ def process_frame_batch(input_path, clip_limit, saturation_multiplier, rotate, t
     cap.release()
     return results
 
-def generate_output_video(input_path, output_path, desired_duration, selected_indices, clip_limit=1.0, saturation_multiplier=1.1,
+def probe_video_resolution(video_path):
+    """Probe the resolution of a video file using FFmpeg."""
+    cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', video_path]
+    output = subprocess.check_output(cmd).decode().strip()
+    width, height = map(int, output.split(','))
+    return width, height
+
+def generate_output_video(input_path, output_path, desired_duration, selected_indices, output_resolution, clip_limit=1.0, saturation_multiplier=1.1,
                          output_format='mp4', progress_callback=None, music_paths=None, music_volume=1.0,
                          status_callback=None, custom_ffmpeg_args=None, watermark_text=None):
     """Generate a video from selected frames with optional enhancements."""
     try:
-        logging.info(f"Generating video: {output_path}")
-        log_session(f"Generating video: {output_path}")
+        logging.info(f"Generating video: {output_path} with resolution {output_resolution}")
+        log_session(f"Generating video: {output_path} with resolution {output_resolution}")
         if status_callback:
             status_callback("Opening video file...")
         cap = cv2.VideoCapture(input_path)
@@ -270,6 +266,7 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
             log_session(f"Error: Invalid video properties: total_frames={total_frames}, fps={fps}")
             return "Invalid video properties", 0, 0, 0
         
+        # Rotate short videos (≤ 60s) to vertical orientation
         rotate = desired_duration <= 60
         start_time = time.time()
 
@@ -295,7 +292,8 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
                     clip_limit,
                     saturation_multiplier,
                     rotate,
-                    temp_dir
+                    temp_dir,
+                    output_resolution=output_resolution
                 )
                 results = pool.map(partial_process_frame_batch, task_batches)
                 frame_counter = sum(len(batch) for batch in results)
@@ -310,10 +308,17 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
                 log_session("Warning: No frames saved for the final video")
                 return "No frames written after processing", 0, 0, 0
 
+            # Verify first frame size
+            if frame_counter > 0:
+                first_frame_path = os.path.join(temp_dir, 'frame_0000.jpg')
+                with Image.open(first_frame_path) as img:
+                    logging.info(f"First frame size: {img.size}")
+                    log_session(f"First frame size: {img.size}")
+
             num_frames = frame_counter
             new_fps = num_frames / desired_duration if num_frames < target_frames_count else fps
-            logging.info(f"Adjusting frame rate to {new_fps:.2f} fps")
-            log_session(f"Adjusting frame rate to {new_fps:.2f} fps")
+            logging.info(f"Parameters: num_frames={num_frames}, target_frames_count={target_frames_count}, new_fps={new_fps:.2f}")
+            log_session(f"Parameters: num_frames={num_frames}, target_frames_count={target_frames_count}, new_fps={new_fps:.2f}")
 
             if status_callback:
                 status_callback("Creating video from frames...")
@@ -321,13 +326,13 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
             log_session("Creating video with FFmpeg")
             temp_final_path = f"temp_final_{uuid.uuid4().hex}.{output_format}"
             
-            cmd = ['ffmpeg', '-framerate', str(new_fps), '-i', os.path.join(temp_dir, 'frame_%04d.jpg')]
+            cmd = ['ffmpeg', '-framerate', str(new_fps), '-i', os.path.join(temp_dir, 'frame_%04d.jpg'), '-s', f"{output_resolution[0]}x{output_resolution[1]}"]
             try:
                 subprocess.run(['ffmpeg', '-hwaccels'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
                 cmd.extend(['-c:v', 'h264_nvenc', '-preset', 'fast'])
             except subprocess.CalledProcessError:
                 cmd.extend(['-c:v', 'libx264', '-preset', 'fast'])
-            cmd.extend(['-pix_fmt', 'yuv420p'])
+            cmd.extend(['-pix_fmt', 'yuv420p', '-r', str(new_fps)])
             if watermark_text:
                 cmd.extend(['-vf', f'drawtext=text={watermark_text}:fontcolor=white:fontsize=24:x=10:y=10'])
             if custom_ffmpeg_args:
@@ -337,6 +342,11 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
             logging.info("Video created from frames")
             log_session("Video created from frames")
 
+            # Probe temp video resolution
+            width, height = probe_video_resolution(temp_final_path)
+            logging.info(f"Temp video resolution: {width}x{height}")
+            log_session(f"Temp video resolution: {width}x{height}")
+
             music_path = music_paths.get(desired_duration, music_paths.get("default")) if music_paths else None
             if music_path and os.path.exists(music_path):
                 if status_callback:
@@ -344,7 +354,7 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
                 logging.info("Adding music with FFmpeg")
                 log_session("Adding music with FFmpeg")
                 cmd = [
-                    'ffmpeg', '-i', temp_final_path, '-i', music_path,
+                    'ffmpeg', '-i', temp_final_path, '-stream_loop', '-1', '-i', music_path,
                     '-filter_complex', f"[1:a]volume={music_volume}[a]",
                     '-map', '0:v', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac', '-shortest', '-y', output_path
                 ]
@@ -363,6 +373,11 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
                 subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
                 logging.info(f"Silent audio added to {output_path}")
                 log_session(f"Silent audio added to {output_path}")
+
+            # Probe final video resolution
+            width, height = probe_video_resolution(output_path)
+            logging.info(f"Final video resolution: {width}x{height}")
+            log_session(f"Final video resolution: {width}x{height}")
 
             os.remove(temp_final_path)
             if progress_callback:
@@ -388,6 +403,8 @@ class VideoProcessorApp:
         self.root.geometry("800x600")
 
         check_system_specs()
+
+        self.output_resolution = (1920, 1080)  # Default per user request
 
         self.theme_var = tk.StringVar(value="Dark")
         theme_frame = ctk.CTkFrame(root)
@@ -498,6 +515,8 @@ class VideoProcessorApp:
                 self.custom_ffmpeg_args = settings.get("custom_ffmpeg_args", None)
                 self.watermark_text = settings.get("watermark_text", None)
                 self.update_channel = settings.get("update_channel", "Stable")
+                resolution_str = settings.get("output_resolution", "1920x1080")
+                self.output_resolution = tuple(map(int, resolution_str.split('x')))
                 loaded_music_paths = settings.get("music_paths", {})
                 for key in self.music_paths:
                     if str(key) in loaded_music_paths:
@@ -515,6 +534,8 @@ class VideoProcessorApp:
         self.clip_limit = float(self.clip_slider.get())
         self.saturation_multiplier = float(self.saturation_slider.get())
         self.music_volume = self.music_volume_slider.get()
+        resolution_str = self.resolution_var.get()
+        self.output_resolution = tuple(map(int, resolution_str.split('x')))
         self.custom_ffmpeg_args = self.ffmpeg_entry.get().split() if self.ffmpeg_entry.get() else None
         self.watermark_text = self.watermark_entry.get() or None
         self.update_channel = self.update_channel_var.get()
@@ -530,7 +551,8 @@ class VideoProcessorApp:
             "output_dir": self.output_dir,
             "custom_ffmpeg_args": self.custom_ffmpeg_args,
             "watermark_text": self.watermark_text,
-            "update_channel": self.update_channel
+            "update_channel": self.update_channel,
+            "output_resolution": resolution_str
         }
         with open("settings.json", "w") as f:
             json.dump(settings, f)
@@ -631,6 +653,12 @@ class VideoProcessorApp:
         self.saturation_slider.pack(pady=2)
         self.saturation_value_label = ctk.CTkLabel(settings_frame, text=f"Saturation: {self.saturation_multiplier:.1f}")
         self.saturation_value_label.pack(pady=2)
+
+        ctk.CTkLabel(settings_frame, text="Output Resolution").pack(pady=5)
+        resolution_options = ["320x180", "640x360", "1280x720", "1920x1080"]
+        self.resolution_var = tk.StringVar(value=f"{self.output_resolution[0]}x{self.output_resolution[1]}")
+        self.resolution_menu = ctk.CTkOptionMenu(settings_frame, variable=self.resolution_var, values=resolution_options)
+        self.resolution_menu.pack(pady=5)
 
         update_channel_frame = ctk.CTkFrame(settings_frame)
         update_channel_frame.pack(pady=5)
@@ -959,6 +987,7 @@ class VideoProcessorApp:
         self.black_slider.set(50)
         self.clip_slider.set(1.0)
         self.saturation_slider.set(1.1)
+        self.resolution_var.set("1920x1080")
         self.music_volume_slider.set(1.0)
         self.output_dir = None
         self.output_dir_label.configure(text="Default")
@@ -1057,7 +1086,7 @@ class VideoProcessorApp:
                     self.queue.put(("status", status))
 
                 error, frames_processed, motion_events, proc_time = generate_output_video(
-                    input_file, output_file, duration, selected_indices,
+                    input_file, output_file, duration, selected_indices, self.output_resolution,
                     clip_limit=self.clip_limit,
                     saturation_multiplier=self.saturation_multiplier,
                     output_format=output_format,
