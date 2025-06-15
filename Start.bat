@@ -6,4 +6,4 @@ git pull
 echo Starting...
 call venv\Scripts\activate
 echo Started
-python movie_8.2.2.pyw
+python movie_9.0.4.pyw
