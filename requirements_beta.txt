@@ -1,0 +1,28 @@
+# Requirements for Bird Box Video Processor v10.0.0
+# Requires Python 3.8 or later (3.12 recommended; 3.13 supported with compatible wheels)
+
+# GUI dependencies
+customtkinter==5.2.2  # Modern Tkinter-based GUI library
+
+# Image and video processing
+opencv-python==4.10.0.84  # OpenCV for video frame processing (Python 3.13/macOS compatible)
+numpy==1.26.4             # Numerical operations for motion detection
+Pillow==10.4.0            # Image handling for previews
+
+# YouTube API and authentication
+google-api-python-client==2.140.0  # YouTube API for video uploads
+google-auth-oauthlib==1.2.1       # OAuth2 authentication
+google-auth-httplib2==0.2.0       # HTTP client for Google APIs
+uritemplate==4.1.1                # URI template parsing for Google APIs
+
+# Network and system utilities
+requests==2.32.3      # HTTP requests for update checks
+psutil==6.0.0         # System resource monitoring (CPU, RAM)
+
+# Scheduling and version management
+schedule==1.2.2       # Simple scheduling for automated tasks
+apscheduler==3.10.4   # Optional: Advanced scheduling alternative to schedule
+packaging==24.1       # Version parsing for update checks
+
+# Optional: Network speed testing (install manually if needed, e.g., `pip install speedtest-cli==2.1.3`)
+# speedtest-cli==2.1.3  # Not included due to Python 3.13 compatibility issues
