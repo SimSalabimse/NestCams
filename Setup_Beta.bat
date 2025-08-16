@@ -4,5 +4,5 @@ if not exist venv (
 )
 call venv\Scripts\activate
 pip install -r requirements_beta.txt
-echo Setup complete. Use Start.bat to run the application.
+echo Setup complete. Use Start_beta.bat to run the application.
 pause

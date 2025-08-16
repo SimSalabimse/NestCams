@@ -48,5 +48,5 @@ if ! pip install -r requirements_beta.txt; then
     exit 1
 fi
 
-echo "Setup complete. Use Start.sh to run the application."
+echo "Setup complete. Use Start_beta.sh to run the application."
 read -p "Press Enter to continue..."
