@@ -98,7 +98,7 @@ class VideoProcessorApp:
         self.root.resizable(True, True)
         self.root.geometry("900x700")
 
-        # Initialize instance variables first
+        # Initialize instance variables
         self.batch_size = 4
         self.worker_processes = 2
         self.output_resolution = (1920, 1080)
@@ -136,10 +136,6 @@ class VideoProcessorApp:
         # Check system specs
         self.check_system_specs()
 
-        # Load settings and presets
-        self.load_settings()
-        self.load_presets()
-
         # Setup GUI tabs
         self.tabview = ctk.CTkTabview(self.root)
         self.tabview.pack(pady=10, padx=10, fill="both", expand=True)
@@ -153,6 +149,10 @@ class VideoProcessorApp:
         self.setup_music_tab()
         self.setup_advanced_tab()
         self.setup_help_tab()
+
+        # Load settings and presets after GUI setup
+        self.load_settings()
+        self.load_presets()
 
         # Setup drag-and-drop
         if TkinterDnD:
@@ -424,23 +424,42 @@ class VideoProcessorApp:
                 self.update_channel = settings.get("update_channel", "Stable")
                 resolution_str = settings.get("output_resolution", "1920x1080")
                 self.output_resolution = tuple(map(int, resolution_str.split('x')))
+                # Update GUI elements
+                self.motion_slider.set(self.motion_threshold)
+                self.white_slider.set(self.white_threshold)
+                self.black_slider.set(self.black_threshold)
+                self.clip_slider.set(self.clip_limit)
+                self.saturation_slider.set(self.saturation_multiplier)
+                self.music_volume_slider.set(self.music_volume)
+                self.resolution_var.set(resolution_str)
+                self.update_channel_var.set(self.update_channel)
+                self.update_settings(0)
+                self.update_volume_label(self.music_volume)
+                if self.ffmpeg_entry and self.custom_ffmpeg_args:
+                    self.ffmpeg_entry.delete(0, tk.END)
+                    self.ffmpeg_entry.insert(0, " ".join(self.custom_ffmpeg_args))
+                if self.watermark_entry and self.watermark_text:
+                    self.watermark_entry.delete(0, tk.END)
+                    self.watermark_entry.insert(0, self.watermark_text)
+                if self.output_dir_label and self.output_dir:
+                    self.output_dir_label.configure(text=os.path.basename(self.output_dir) or self.output_dir)
                 loaded_music_paths = settings.get("music_paths", {})
                 for key in self.music_paths:
                     str_key = str(key)
                     if str_key in loaded_music_paths:
                         self.music_paths[key] = loaded_music_paths[str_key]
-                        if key == "default":
+                        if key == "default" and self.music_label_default:
                             self.music_label_default.configure(text=os.path.basename(self.music_paths[key]) if self.music_paths[key] else "No music selected")
-                        elif key == 60:
+                        elif key == 60 and self.music_label_60s:
                             self.music_label_60s.configure(text=os.path.basename(self.music_paths[key]) if self.music_paths[key] else "No music selected")
-                        elif key == 720:
+                        elif key == 720 and self.music_label_12min:
                             self.music_label_12min.configure(text=os.path.basename(self.music_paths[key]) if self.music_paths[key] else "No music selected")
-                        elif key == 3600:
+                        elif key == 3600 and self.music_label_1h:
                             self.music_label_1h.configure(text=os.path.basename(self.music_paths[key]) if self.music_paths[key] else "No music selected")
             log_session("Loaded settings from settings.json")
-        except (FileNotFoundError, json.JSONDecodeError, ValueError):
-            logging.warning("Could not load settings, using defaults")
-            log_session("Could not load settings, using defaults")
+        except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
+            logging.warning(f"Could not load settings: {str(e)}, using defaults")
+            log_session(f"Could not load settings: {str(e)}, using defaults")
 
     def save_settings(self):
         """Save settings to JSON."""
