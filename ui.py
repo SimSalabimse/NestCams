@@ -15,6 +15,7 @@ import psutil
 from packaging import version
 import requests
 import schedule
+import shutil  # Added for FFmpeg check
 
 VERSION = "10.0.0"
 UPDATE_CHANNELS = ["Stable", "Beta"]
@@ -67,8 +68,13 @@ class VideoProcessorApp:
         log_session(f"Initialized variables: {time.time() - start_time:.2f}s")
 
         # Check system specs
-        self.check_system_specs()
-        log_session(f"Checked system specs: {time.time() - start_time:.2f}s")
+        try:
+            self.check_system_specs()
+            log_session(f"Checked system specs: {time.time() - start_time:.2f}s")
+        except Exception as e:
+            log_session(f"System specs check failed: {str(e)}")
+            messagebox.showerror("Error", f"Failed to verify system requirements: {str(e)}")
+            raise
 
         # Setup GUI tabs
         self.tabview = ctk.CTkTabview(self.root)
@@ -108,406 +114,256 @@ class VideoProcessorApp:
         # Periodic tasks
         self.root.after(50, self.process_queue)
         self.root.after(33, self.update_preview)
-        self.root.after(1000, self.check_for_updates)  # Delay update check
+        threading.Thread(target=self.check_for_updates, daemon=True).start()  # Run in background thread
         log_session(f"UI initialization completed: {time.time() - start_time:.2f}s")
         self.root.resizable(True, True)
         self.root.geometry("900x700")
 
-    def check_system_specs(self):
-        """Adjust processing parameters based on system specs."""
-        start_time = time.time()
-        cpu_cores = os.cpu_count() or 1
-        total_ram_gb = psutil.virtual_memory().total / (1024 ** 3)
-        if total_ram_gb < 8:
-            self.batch_size = max(1, cpu_cores // 2)
-            self.worker_processes = 1
-        elif total_ram_gb < 16:
-            self.batch_size = max(2, cpu_cores // 2)
-            self.worker_processes = min(2, cpu_cores)
-        elif total_ram_gb < 32:
-            self.batch_size = max(4, cpu_cores)
-            self.worker_processes = min(4, cpu_cores)
-        else:
-            self.batch_size = max(8, cpu_cores * 2)
-            self.worker_processes = min(8, cpu_cores)
-        log_session(f"System specs - CPU cores: {cpu_cores}, RAM: {total_ram_gb:.2f}GB, Batch size: {self.batch_size}, Workers: {self.worker_processes}, Time: {time.time() - start_time:.2f}s")
-
     def setup_main_tab(self):
-        """Setup Main tab UI."""
         start_time = time.time()
-        label_text = "Select Input Video(s)" + (" or Drag & Drop" if hasattr(self.root, 'drop_target_register') else "")
-        self.label = ctk.CTkLabel(self.main_tab, text=label_text)
-        self.label.pack(pady=10)
-        self.generate_60s = tk.BooleanVar(value=True)
-        self.switch_60s = ctk.CTkSwitch(self.main_tab, text="Generate 60s Video", variable=self.generate_60s)
-        self.switch_60s.pack(pady=5)
-        ToolTip(self.switch_60s, "Generate a 60-second condensed video (vertical orientation)")
-        self.generate_12min = tk.BooleanVar(value=True)
-        self.switch_12min = ctk.CTkSwitch(self.main_tab, text="Generate 12min Video", variable=self.generate_12min)
-        self.switch_12min.pack(pady=5)
-        ToolTip(self.switch_12min, "Generate a 12-minute condensed video")
-        self.generate_1h = tk.BooleanVar(value=True)
-        self.switch_1h = ctk.CTkSwitch(self.main_tab, text="Generate 1h Video", variable=self.generate_1h)
-        self.switch_1h.pack(pady=5)
-        ToolTip(self.switch_1h, "Generate a 1-hour condensed video")
-        custom_frame = ctk.CTkFrame(self.main_tab)
+        frame = ctk.CTkFrame(self.main_tab)
+        frame.pack(pady=20, padx=20, fill="both", expand=True)
+        self.browse_button = ctk.CTkButton(frame, text="Browse Files", command=self.browse_files)
+        self.browse_button.pack(pady=10)
+        self.label = ctk.CTkLabel(frame, text="No files selected")
+        self.label.pack(pady=5)
+        duration_frame = ctk.CTkFrame(frame)
+        duration_frame.pack(pady=10)
+        self.generate_60s = ctk.CTkSwitch(duration_frame, text="Generate 60s video")
+        self.generate_60s.pack(side="left", padx=5)
+        self.switch_60s = self.generate_60s
+        self.generate_12min = ctk.CTkSwitch(duration_frame, text="Generate 12min video")
+        self.generate_12min.pack(side="left", padx=5)
+        self.switch_12min = self.generate_12min
+        self.generate_1h = ctk.CTkSwitch(duration_frame, text="Generate 1h video")
+        self.generate_1h.pack(side="left", padx=5)
+        self.switch_1h = self.generate_1h
+        custom_frame = ctk.CTkFrame(frame)
         custom_frame.pack(pady=5)
-        ctk.CTkLabel(custom_frame, text="Custom Duration (seconds):").pack(side=tk.LEFT, padx=5)
-        self.custom_duration_entry = ctk.CTkEntry(custom_frame, placeholder_text="e.g., 120")
-        self.custom_duration_entry.pack(side=tk.LEFT, padx=5)
-        ToolTip(self.custom_duration_entry, "Enter custom video duration in seconds")
-        self.output_format_var = tk.StringVar(value="mp4")
-        format_frame = ctk.CTkFrame(self.main_tab)
-        format_frame.pack(pady=5)
-        ctk.CTkLabel(format_frame, text="Output Format:").pack(side=tk.LEFT, padx=5)
-        ctk.CTkOptionMenu(format_frame, variable=self.output_format_var, values=["mp4", "avi", "mkv", "mov", "wmv"]).pack(side=tk.LEFT)
-        ToolTip(format_frame, "Select output video format")
-        self.browse_button = ctk.CTkButton(self.main_tab, text="Browse", command=self.browse_files)
-        self.browse_button.pack(pady=5)
-        ToolTip(self.browse_button, "Browse for video files (Ctrl+O)")
-        self.start_button = ctk.CTkButton(self.main_tab, text="Start Processing", command=self.start_processing, state="disabled")
-        self.start_button.pack(pady=5)
-        ToolTip(self.start_button, "Start processing videos (Ctrl+S)")
-        self.pause_button = ctk.CTkButton(self.main_tab, text="Pause", command=self.toggle_pause, state="disabled")
-        self.pause_button.pack(pady=5)
-        ToolTip(self.pause_button, "Pause/Resume processing")
-        self.cancel_button = ctk.CTkButton(self.main_tab, text="Cancel", command=self.cancel_processing, state="disabled")
-        self.cancel_button.pack(pady=5)
-        ToolTip(self.cancel_button, "Cancel processing (Ctrl+C)")
-        self.progress_frame = ctk.CTkScrollableFrame(self.main_tab)
-        self.progress_frame.pack(pady=10, fill='both', expand=True)
-        ToolTip(self.progress_frame, "Per-file processing progress")
-        self.output_label = ctk.CTkLabel(self.main_tab, text="Output Files:")
-        self.output_label.pack(pady=10)
-        self.output_frame = ctk.CTkScrollableFrame(self.main_tab)
-        self.output_frame.pack(pady=5, fill='x')
+        ctk.CTkLabel(custom_frame, text="Custom Duration (s):").pack(side="left")
+        self.custom_duration_entry = ctk.CTkEntry(custom_frame, width=100)
+        self.custom_duration_entry.pack(side="left", padx=5)
+        button_frame = ctk.CTkFrame(frame)
+        button_frame.pack(pady=10)
+        self.start_button = ctk.CTkButton(button_frame, text="Start", command=self.start_processing, state="disabled")
+        self.start_button.pack(side="left", padx=5)
+        self.pause_button = ctk.CTkButton(button_frame, text="Pause", command=self.toggle_pause, state="disabled")
+        self.pause_button.pack(side="left", padx=5)
+        self.cancel_button = ctk.CTkButton(button_frame, text="Cancel", command=self.cancel_processing, state="disabled")
+        self.cancel_button.pack(side="left", padx=5)
+        self.progress_frame = ctk.CTkFrame(frame)
+        self.progress_frame.pack(fill="x", pady=10)
+        self.output_frame = ctk.CTkFrame(frame)
+        self.output_frame.pack(fill="x", pady=10)
         log_session(f"Main tab setup: {time.time() - start_time:.2f}s")
 
     def setup_settings_tab(self):
-        """Setup Settings tab UI."""
         start_time = time.time()
-        self.settings_frame = ctk.CTkScrollableFrame(self.settings_tab)
-        self.settings_frame.pack(padx=10, pady=10, fill='both', expand=True)
-        ctk.CTkLabel(self.settings_frame, text="Motion Sensitivity").pack(pady=5)
-        self.motion_slider = ctk.CTkSlider(self.settings_frame, from_=500, to=20000, number_of_steps=195, command=self.update_settings)
+        frame = ctk.CTkFrame(self.settings_tab)
+        frame.pack(pady=20, padx=20, fill="both", expand=True)
+        motion_frame = ctk.CTkFrame(frame)
+        motion_frame.pack(fill="x", pady=5)
+        ctk.CTkLabel(motion_frame, text="Motion Threshold:").pack(side="left")
+        self.motion_slider = ctk.CTkSlider(motion_frame, from_=1000, to=10000, number_of_steps=90, command=self.update_settings)
         self.motion_slider.set(self.motion_threshold)
-        self.motion_slider.pack(pady=5)
-        self.motion_value_label = ctk.CTkLabel(self.settings_frame, text=f"Threshold: {self.motion_threshold}")
-        self.motion_value_label.pack(pady=5)
-        ToolTip(self.motion_slider, "Higher value means less sensitive to motion")
-        ctk.CTkLabel(self.settings_frame, text="White Threshold").pack(pady=2)
-        self.white_slider = ctk.CTkSlider(self.settings_frame, from_=100, to=255, number_of_steps=155, command=self.update_settings)
+        self.motion_slider.pack(side="left", fill="x", expand=True, padx=10)
+        self.motion_value_label = ctk.CTkLabel(motion_frame, text=f"Threshold: {self.motion_threshold}", width=100)
+        self.motion_value_label.pack(side="left")
+        white_frame = ctk.CTkFrame(frame)
+        white_frame.pack(fill="x", pady=5)
+        ctk.CTkLabel(white_frame, text="White Threshold:").pack(side="left")
+        self.white_slider = ctk.CTkSlider(white_frame, from_=100, to=255, number_of_steps=155, command=self.update_settings)
         self.white_slider.set(self.white_threshold)
-        self.white_slider.pack(pady=2)
-        self.white_value_label = ctk.CTkLabel(self.settings_frame, text=f"White: {self.white_threshold}")
-        self.white_value_label.pack(pady=2)
-        ToolTip(self.white_slider, "Threshold for detecting overly white frames")
-        ctk.CTkLabel(self.settings_frame, text="Black Threshold").pack(pady=2)
-        self.black_slider = ctk.CTkSlider(self.settings_frame, from_=0, to=100, number_of_steps=100, command=self.update_settings)
+        self.white_slider.pack(side="left", fill="x", expand=True, padx=10)
+        self.white_value_label = ctk.CTkLabel(white_frame, text=f"White: {self.white_threshold}", width=100)
+        self.white_value_label.pack(side="left")
+        black_frame = ctk.CTkFrame(frame)
+        black_frame.pack(fill="x", pady=5)
+        ctk.CTkLabel(black_frame, text="Black Threshold:").pack(side="left")
+        self.black_slider = ctk.CTkSlider(black_frame, from_=0, to=100, number_of_steps=100, command=self.update_settings)
         self.black_slider.set(self.black_threshold)
-        self.black_slider.pack(pady=2)
-        self.black_value_label = ctk.CTkLabel(self.settings_frame, text=f"Black: {self.black_threshold}")
-        self.black_value_label.pack(pady=2)
-        ToolTip(self.black_slider, "Threshold for detecting overly black frames")
-        ctk.CTkLabel(self.settings_frame, text="CLAHE Clip Limit").pack(pady=2)
-        self.clip_slider = ctk.CTkSlider(self.settings_frame, from_=0.2, to=5.0, number_of_steps=96, command=self.update_settings)
+        self.black_slider.pack(side="left", fill="x", expand=True, padx=10)
+        self.black_value_label = ctk.CTkLabel(black_frame, text=f"Black: {self.black_threshold}", width=100)
+        self.black_value_label.pack(side="left")
+        clip_frame = ctk.CTkFrame(frame)
+        clip_frame.pack(fill="x", pady=5)
+        ctk.CTkLabel(clip_frame, text="Clip Limit:").pack(side="left")
+        self.clip_slider = ctk.CTkSlider(clip_frame, from_=0.1, to=5.0, number_of_steps=49, command=self.update_settings)
         self.clip_slider.set(self.clip_limit)
-        self.clip_slider.pack(pady=2)
-        self.clip_value_label = ctk.CTkLabel(self.settings_frame, text=f"Clip Limit: {self.clip_limit:.1f}")
-        self.clip_value_label.pack(pady=2)
-        ToolTip(self.clip_slider, "Contrast enhancement limit")
-        ctk.CTkLabel(self.settings_frame, text="Saturation Multiplier").pack(pady=2)
-        self.saturation_slider = ctk.CTkSlider(self.settings_frame, from_=0.5, to=2.0, number_of_steps=150, command=self.update_settings)
+        self.clip_slider.pack(side="left", fill="x", expand=True, padx=10)
+        self.clip_value_label = ctk.CTkLabel(clip_frame, text=f"Clip Limit: {self.clip_limit:.1f}", width=100)
+        self.clip_value_label.pack(side="left")
+        sat_frame = ctk.CTkFrame(frame)
+        sat_frame.pack(fill="x", pady=5)
+        ctk.CTkLabel(sat_frame, text="Saturation Multiplier:").pack(side="left")
+        self.saturation_slider = ctk.CTkSlider(sat_frame, from_=0.5, to=2.0, number_of_steps=15, command=self.update_settings)
         self.saturation_slider.set(self.saturation_multiplier)
-        self.saturation_slider.pack(pady=2)
-        self.saturation_value_label = ctk.CTkLabel(self.settings_frame, text=f"Saturation: {self.saturation_multiplier:.1f}")
-        self.saturation_value_label.pack(pady=2)
-        ToolTip(self.saturation_slider, "Multiplier for color saturation")
-        ctk.CTkLabel(self.settings_frame, text="Output Resolution").pack(pady=5)
-        resolution_options = ["320x180", "640x360", "1280x720", "1920x1080"]
-        self.resolution_var = tk.StringVar(value=f"{self.output_resolution[0]}x{self.output_resolution[1]}")
-        self.resolution_menu = ctk.CTkOptionMenu(self.settings_frame, variable=self.resolution_var, values=resolution_options)
-        self.resolution_menu.pack(pady=5)
-        ToolTip(self.resolution_menu, "Select output video resolution")
-        self.preview_frame = ctk.CTkFrame(self.settings_tab)
-        self.preview_frame.pack(pady=10)
-        self.preview_label = ctk.CTkLabel(self.preview_frame, text="Preview (Select video first)", image=self.blank_ctk_image)
-        self.preview_label.pack(pady=5)
-        ToolTip(self.preview_label, "Live preview of selected video")
-        control_frame = ctk.CTkFrame(self.preview_frame)
-        control_frame.pack(pady=5)
-        self.preview_button = ctk.CTkButton(control_frame, text="Start Preview", command=self.toggle_preview, state="disabled")
-        self.preview_button.pack(side=tk.LEFT, padx=5)
-        ToolTip(self.preview_button, "Start/Stop video preview")
-        self.preview_slider = ctk.CTkSlider(control_frame, from_=0, to=0, number_of_steps=0, command=self.seek_preview)
-        self.preview_slider.pack(side=tk.LEFT, padx=5)
-        ToolTip(self.preview_slider, "Seek through video frames")
+        self.saturation_slider.pack(side="left", fill="x", expand=True, padx=10)
+        self.saturation_value_label = ctk.CTkLabel(sat_frame, text=f"Saturation: {self.saturation_multiplier:.1f}", width=100)
+        self.saturation_value_label.pack(side="left")
+        preview_frame = ctk.CTkFrame(frame)
+        preview_frame.pack(pady=10)
+        self.preview_label = ctk.CTkLabel(preview_frame, image=self.blank_ctk_image, text="")
+        self.preview_label.pack()
+        self.preview_slider = ctk.CTkSlider(preview_frame, from_=0, to=1, command=self.seek_preview, state="disabled")
+        self.preview_slider.pack(fill="x", pady=5)
+        self.preview_button = ctk.CTkButton(preview_frame, text="Start Preview", command=self.toggle_preview, state="disabled")
+        self.preview_button.pack()
         log_session(f"Settings tab setup: {time.time() - start_time:.2f}s")
 
     def setup_music_tab(self):
-        """Setup Music tab UI."""
         start_time = time.time()
-        music_settings_frame = ctk.CTkFrame(self.music_tab)
-        music_settings_frame.pack(pady=10, padx=10, fill='both', expand=True)
-        ctk.CTkLabel(music_settings_frame, text="Music Settings").pack(pady=5)
-        default_music_frame = ctk.CTkFrame(music_settings_frame)
-        default_music_frame.pack(pady=2)
-        ctk.CTkLabel(default_music_frame, text="Default Music:").pack(side=tk.LEFT)
-        self.music_label_default = ctk.CTkLabel(default_music_frame, text="No music selected")
-        self.music_label_default.pack(side=tk.LEFT, padx=5)
-        ctk.CTkButton(default_music_frame, text="Select", command=self.select_music_default).pack(side=tk.LEFT)
-        ToolTip(default_music_frame, "Select default background music")
-        music_60s_frame = ctk.CTkFrame(music_settings_frame)
-        music_60s_frame.pack(pady=2)
-        ctk.CTkLabel(music_60s_frame, text="Music for 60s Video:").pack(side=tk.LEFT)
-        self.music_label_60s = ctk.CTkLabel(music_60s_frame, text="No music selected")
-        self.music_label_60s.pack(side=tk.LEFT, padx=5)
-        ctk.CTkButton(music_60s_frame, text="Select", command=self.select_music_60s).pack(side=tk.LEFT)
-        ToolTip(music_60s_frame, "Select music for 60s videos")
-        music_12min_frame = ctk.CTkFrame(music_settings_frame)
-        music_12min_frame.pack(pady=2)
-        ctk.CTkLabel(music_12min_frame, text="Music for 12min Video:").pack(side=tk.LEFT)
-        self.music_label_12min = ctk.CTkLabel(music_12min_frame, text="No music selected")
-        self.music_label_12min.pack(side=tk.LEFT, padx=5)
-        ctk.CTkButton(music_12min_frame, text="Select", command=self.select_music_12min).pack(side=tk.LEFT)
-        ToolTip(music_12min_frame, "Select music for 12min videos")
-        music_1h_frame = ctk.CTkFrame(music_settings_frame)
-        music_1h_frame.pack(pady=2)
-        ctk.CTkLabel(music_1h_frame, text="Music for 1h Video:").pack(side=tk.LEFT)
-        self.music_label_1h = ctk.CTkLabel(music_1h_frame, text="No music selected")
-        self.music_label_1h.pack(side=tk.LEFT, padx=5)
-        ctk.CTkButton(music_1h_frame, text="Select", command=self.select_music_1h).pack(side=tk.LEFT)
-        ToolTip(music_1h_frame, "Select music for 1h videos")
-        volume_frame = ctk.CTkFrame(music_settings_frame)
-        volume_frame.pack(pady=2)
-        ctk.CTkLabel(volume_frame, text="Music Volume (0.0 - 1.0):").pack(side=tk.LEFT)
-        self.music_volume_slider = ctk.CTkSlider(volume_frame, from_=0.0, to=1.0, number_of_steps=100, command=self.update_volume_label)
-        self.music_volume_slider.set(self.music_volume)
-        self.music_volume_slider.pack(side=tk.LEFT)
-        self.volume_value_label = ctk.CTkLabel(volume_frame, text=f"{int(self.music_volume * 100)}%")
-        self.volume_value_label.pack(side=tk.LEFT, padx=5)
-        ToolTip(volume_frame, "Adjust music volume level")
+        frame = ctk.CTkFrame(self.music_tab)
+        frame.pack(pady=20, padx=20, fill="both", expand=True)
+        default_frame = ctk.CTkFrame(frame)
+        default_frame.pack(fill="x", pady=5)
+        ctk.CTkButton(default_frame, text="Select Default Music", command=self.select_music_default).pack(side="left")
+        self.music_label_default = ctk.CTkLabel(default_frame, text="No file selected")
+        self.music_label_default.pack(side="left", padx=10)
+        s60_frame = ctk.CTkFrame(frame)
+        s60_frame.pack(fill="x", pady=5)
+        ctk.CTkButton(s60_frame, text="Select 60s Music", command=self.select_music_60s).pack(side="left")
+        self.music_label_60s = ctk.CTkLabel(s60_frame, text="No file selected")
+        self.music_label_60s.pack(side="left", padx=10)
+        min12_frame = ctk.CTkFrame(frame)
+        min12_frame.pack(fill="x", pady=5)
+        ctk.CTkButton(min12_frame, text="Select 12min Music", command=self.select_music_12min).pack(side="left")
+        self.music_label_12min = ctk.CTkLabel(min12_frame, text="No file selected")
+        self.music_label_12min.pack(side="left", padx=10)
+        h1_frame = ctk.CTkFrame(frame)
+        h1_frame.pack(fill="x", pady=5)
+        ctk.CTkButton(h1_frame, text="Select 1h Music", command=self.select_music_1h).pack(side="left")
+        self.music_label_1h = ctk.CTkLabel(h1_frame, text="No file selected")
+        self.music_label_1h.pack(side="left", padx=10)
+        volume_frame = ctk.CTkFrame(frame)
+        volume_frame.pack(fill="x", pady=5)
+        ctk.CTkLabel(volume_frame, text="Music Volume:").pack(side="left")
+        self.volume_slider = ctk.CTkSlider(volume_frame, from_=0.0, to=1.0, command=self.update_volume_label)
+        self.volume_slider.set(self.music_volume)
+        self.volume_slider.pack(side="left", fill="x", expand=True, padx=10)
+        self.volume_value_label = ctk.CTkLabel(volume_frame, text="100%")
+        self.volume_value_label.pack(side="left")
         log_session(f"Music tab setup: {time.time() - start_time:.2f}s")
 
     def setup_advanced_tab(self):
-        """Setup Advanced tab UI."""
         start_time = time.time()
-        advanced_frame = ctk.CTkScrollableFrame(self.advanced_tab)
-        advanced_frame.pack(padx=10, pady=10, fill='both', expand=True)
-        self.theme_var = tk.StringVar(value="Dark")
-        theme_frame = ctk.CTkFrame(advanced_frame)
-        theme_frame.pack(pady=5)
-        ctk.CTkLabel(theme_frame, text="Theme:").pack(side=tk.LEFT, padx=5)
-        ctk.CTkOptionMenu(theme_frame, variable=self.theme_var, values=["Light", "Dark"], command=self.toggle_theme).pack(side=tk.LEFT)
-        ToolTip(theme_frame, "Switch between light and dark themes")
-        update_channel_frame = ctk.CTkFrame(advanced_frame)
-        update_channel_frame.pack(pady=5)
-        ctk.CTkLabel(update_channel_frame, text="Update Channel:").pack(side=tk.LEFT)
-        self.update_channel_var = tk.StringVar(value=self.update_channel)
-        ctk.CTkOptionMenu(update_channel_frame, variable=self.update_channel_var, values=UPDATE_CHANNELS).pack(side=tk.LEFT)
-        ToolTip(update_channel_frame, "Select update channel (Stable or Beta)")
-        output_dir_frame = ctk.CTkFrame(advanced_frame)
-        output_dir_frame.pack(pady=5)
-        ctk.CTkLabel(output_dir_frame, text="Output Directory:").pack(side=tk.LEFT)
-        self.output_dir_label = ctk.CTkLabel(output_dir_frame, text=self.output_dir or "Default")
-        self.output_dir_label.pack(side=tk.LEFT, padx=5)
-        ctk.CTkButton(output_dir_frame, text="Browse", command=self.select_output_dir).pack(side=tk.LEFT)
-        ToolTip(output_dir_frame, "Select custom output directory")
-        ffmpeg_frame = ctk.CTkFrame(advanced_frame)
-        ffmpeg_frame.pack(pady=5)
-        ctk.CTkLabel(ffmpeg_frame, text="Custom FFmpeg Args:").pack(side=tk.LEFT)
-        self.ffmpeg_entry = ctk.CTkEntry(ffmpeg_frame, placeholder_text="e.g., -vf scale=1280:720")
-        self.ffmpeg_entry.pack(side=tk.LEFT, padx=5)
-        ToolTip(ffmpeg_frame, "Additional FFmpeg command-line arguments")
-        watermark_frame = ctk.CTkFrame(advanced_frame)
-        watermark_frame.pack(pady=5)
-        ctk.CTkLabel(watermark_frame, text="Watermark Text:").pack(side=tk.LEFT)
-        self.watermark_entry = ctk.CTkEntry(watermark_frame, placeholder_text="Enter watermark")
-        self.watermark_entry.pack(side=tk.LEFT, padx=5)
-        ToolTip(watermark_frame, "Text to watermark on videos")
-        schedule_frame = ctk.CTkFrame(advanced_frame)
-        schedule_frame.pack(pady=10)
-        ctk.CTkLabel(schedule_frame, text="Schedule Processing (HH:MM):").pack(side=tk.LEFT)
-        self.schedule_entry = ctk.CTkEntry(schedule_frame, placeholder_text="e.g., 14:30")
-        self.schedule_entry.pack(pady=2)
-        ctk.CTkButton(schedule_frame, text="Set Schedule", command=self.set_schedule).pack(pady=2)
-        ToolTip(schedule_frame, "Schedule daily processing time")
-        preset_frame = ctk.CTkFrame(advanced_frame)
-        preset_frame.pack(pady=10)
-        ctk.CTkLabel(preset_frame, text="Preset Management").pack(pady=5)
-        self.preset_combobox = ctk.CTkComboBox(preset_frame, values=list(self.presets.keys()))
-        self.preset_combobox.pack(pady=2)
-        ctk.CTkButton(preset_frame, text="Load Preset", command=self.load_preset).pack(pady=5)
-        self.preset_name_entry = ctk.CTkEntry(preset_frame, placeholder_text="Enter preset name")
-        self.preset_name_entry.pack(pady=2)
-        ctk.CTkButton(preset_frame, text="Save Preset", command=self.save_preset).pack(pady=5)
-        ToolTip(preset_frame, "Save/load preset configurations")
-        ctk.CTkButton(advanced_frame, text="Save Settings", command=self.save_settings).pack(pady=10)
-        ctk.CTkButton(advanced_frame, text="Reset to Default", command=self.reset_to_default).pack(pady=10)
+        frame = ctk.CTkFrame(self.advanced_tab)
+        frame.pack(pady=20, padx=20, fill="both", expand=True)
+        outdir_frame = ctk.CTkFrame(frame)
+        outdir_frame.pack(fill="x", pady=5)
+        ctk.CTkButton(outdir_frame, text="Select Output Directory", command=self.select_output_dir).pack(side="left")
+        self.output_dir_label = ctk.CTkLabel(outdir_frame, text="Current directory")
+        self.output_dir_label.pack(side="left", padx=10)
+        format_frame = ctk.CTkFrame(frame)
+        format_frame.pack(fill="x", pady=5)
+        ctk.CTkLabel(format_frame, text="Output Format:").pack(side="left")
+        self.output_format_var = ctk.StringVar(value="mp4")
+        ctk.CTkComboBox(format_frame, values=["mp4", "avi", "mkv"], variable=self.output_format_var).pack(side="left", padx=10)
+        schedule_frame = ctk.CTkFrame(frame)
+        schedule_frame.pack(fill="x", pady=5)
+        ctk.CTkLabel(schedule_frame, text="Schedule (HH:MM):").pack(side="left")
+        self.schedule_entry = ctk.CTkEntry(schedule_frame, width=100)
+        self.schedule_entry.pack(side="left", padx=5)
+        ctk.CTkButton(schedule_frame, text="Set", command=self.set_schedule).pack(side="left")
+        theme_frame = ctk.CTkFrame(frame)
+        theme_frame.pack(fill="x", pady=5)
+        ctk.CTkLabel(theme_frame, text="Theme:").pack(side="left")
+        ctk.CTkOptionMenu(theme_frame, values=["Dark", "Light"], command=self.toggle_theme).pack(side="left", padx=10)
+        update_frame = ctk.CTkFrame(frame)
+        update_frame.pack(fill="x", pady=5)
+        ctk.CTkLabel(update_frame, text="Update Channel:").pack(side="left")
+        self.update_channel_var = ctk.StringVar(value=self.update_channel)
+        ctk.CTkOptionMenu(update_frame, values=UPDATE_CHANNELS, variable=self.update_channel_var, command=lambda channel: setattr(self, 'update_channel', channel)).pack(side="left", padx=10)
         log_session(f"Advanced tab setup: {time.time() - start_time:.2f}s")
 
     def setup_help_tab(self):
-        """Setup Help tab with documentation."""
         start_time = time.time()
-        help_text = (
-            "Bird Box Video Processor Help\n\n"
-            "1. Main Tab: Select videos, choose durations, start processing.\n"
-            "2. Settings Tab: Adjust motion detection and enhancement parameters.\n"
-            "3. Music Tab: Select background music for different video lengths.\n"
-            "4. Advanced Tab: Custom FFmpeg args, watermark, scheduling, presets.\n\n"
-            "Tips:\n- Drag and drop videos into the window.\n- Use Ctrl+O (browse), Ctrl+S (start), Ctrl+C (cancel).\n"
-            "- Check logs in the 'log' folder.\n- Ensure client_secrets.json for YouTube upload.\n\n"
-            f"Version: {VERSION}"
-        )
-        ctk.CTkLabel(self.help_tab, text=help_text, justify=tk.LEFT).pack(pady=10, padx=10, anchor="nw")
+        frame = ctk.CTkFrame(self.help_tab)
+        frame.pack(pady=20, padx=20, fill="both", expand=True)
+        help_text = "Bird Box Video Processor Help\n\n" \
+                    "Main Tab: Select videos and choose durations to process.\n" \
+                    "Settings Tab: Adjust thresholds for motion detection and frame processing.\n" \
+                    "Music Tab: Select background music for different video lengths.\n" \
+                    "Advanced Tab: Set output directory, format, schedule, theme, etc.\n\n" \
+                    "For more info, visit the documentation."
+        ctk.CTkLabel(frame, text=help_text, justify="left").pack(anchor="w")
         log_session(f"Help tab setup: {time.time() - start_time:.2f}s")
 
     def load_settings(self):
-        """Load settings from JSON."""
         start_time = time.time()
-        try:
-            with open("settings.json", "r") as f:
-                settings = json.load(f)
-                self.motion_threshold = settings.get("motion_threshold", 3000)
-                self.white_threshold = settings.get("white_threshold", 200)
-                self.black_threshold = settings.get("black_threshold", 50)
-                self.clip_limit = settings.get("clip_limit", 1.0)
-                self.saturation_multiplier = settings.get("saturation_multiplier", 1.1)
-                self.music_volume = settings.get("music_volume", 1.0)
-                self.output_dir = settings.get("output_dir", None)
-                self.custom_ffmpeg_args = settings.get("custom_ffmpeg_args", None)
-                self.watermark_text = settings.get("watermark_text", None)
-                self.update_channel = settings.get("update_channel", "Stable")
-                resolution_str = settings.get("output_resolution", "1920x1080")
-                self.output_resolution = tuple(map(int, resolution_str.split('x')))
-                self.motion_slider.set(self.motion_threshold)
-                self.white_slider.set(self.white_threshold)
-                self.black_slider.set(self.black_threshold)
-                self.clip_slider.set(self.clip_limit)
-                self.saturation_slider.set(self.saturation_multiplier)
-                self.music_volume_slider.set(self.music_volume)
-                self.resolution_var.set(resolution_str)
-                self.update_channel_var.set(self.update_channel)
-                self.update_settings(0)
+        if os.path.exists('settings.json'):
+            try:
+                with open('settings.json', 'r') as f:
+                    settings = json.load(f)
+                self.motion_slider.set(settings.get('motion_threshold', self.motion_threshold))
+                self.white_slider.set(settings.get('white_threshold', self.white_threshold))
+                self.black_slider.set(settings.get('black_threshold', self.black_threshold))
+                self.clip_slider.set(settings.get('clip_limit', self.clip_limit))
+                self.saturation_slider.set(settings.get('saturation_multiplier', self.saturation_multiplier))
+                self.volume_slider.set(settings.get('music_volume', self.music_volume))
+                self.update_settings(None)
                 self.update_volume_label(self.music_volume)
-                if self.ffmpeg_entry and self.custom_ffmpeg_args:
-                    self.ffmpeg_entry.delete(0, tk.END)
-                    self.ffmpeg_entry.insert(0, " ".join(self.custom_ffmpeg_args))
-                if self.watermark_entry and self.watermark_text:
-                    self.watermark_entry.delete(0, tk.END)
-                    self.watermark_entry.insert(0, self.watermark_text)
-                if self.output_dir_label and self.output_dir:
+                self.output_format_var.set(settings.get('output_format', 'mp4'))
+                self.update_channel = settings.get('update_channel', 'Stable')
+                self.update_channel_var.set(self.update_channel)
+                self.music_paths = settings.get('music_paths', self.music_paths)
+                self.music_label_default.configure(text=os.path.basename(self.music_paths['default']) if self.music_paths['default'] else "No file selected")
+                self.music_label_60s.configure(text=os.path.basename(self.music_paths[60]) if self.music_paths[60] else "No file selected")
+                self.music_label_12min.configure(text=os.path.basename(self.music_paths[720]) if self.music_paths[720] else "No file selected")
+                self.music_label_1h.configure(text=os.path.basename(self.music_paths[3600]) if self.music_paths[3600] else "No file selected")
+                self.output_dir = settings.get('output_dir', None)
+                if self.output_dir:
                     self.output_dir_label.configure(text=os.path.basename(self.output_dir) or self.output_dir)
-                loaded_music_paths = settings.get("music_paths", {})
-                for key in self.music_paths:
-                    str_key = str(key)
-                    if str_key in loaded_music_paths:
-                        self.music_paths[key] = loaded_music_paths[str_key]
-                        if key == "default" and self.music_label_default:
-                            self.music_label_default.configure(text=os.path.basename(self.music_paths[key]) if self.music_paths[key] else "No music selected")
-                        elif key == 60 and self.music_label_60s:
-                            self.music_label_60s.configure(text=os.path.basename(self.music_paths[key]) if self.music_paths[key] else "No music selected")
-                        elif key == 720 and self.music_label_12min:
-                            self.music_label_12min.configure(text=os.path.basename(self.music_paths[key]) if self.music_paths[key] else "No music selected")
-                        elif key == 3600 and self.music_label_1h:
-                            self.music_label_1h.configure(text=os.path.basename(self.music_paths[key]) if self.music_paths[key] else "No music selected")
-            log_session(f"Settings loaded: {time.time() - start_time:.2f}s")
-        except (FileNotFoundError, json.JSONDecodeError, ValueError) as e:
-            log_session(f"Could not load settings: {str(e)}, using defaults, Time: {time.time() - start_time:.2f}s")
-
-    def save_settings(self):
-        """Save settings to JSON."""
-        start_time = time.time()
-        self.motion_threshold = int(self.motion_slider.get())
-        self.white_threshold = int(self.white_slider.get())
-        self.black_threshold = int(self.black_slider.get())
-        self.clip_limit = float(self.clip_slider.get())
-        self.saturation_multiplier = float(self.saturation_slider.get())
-        self.music_volume = self.music_volume_slider.get()
-        resolution_str = self.resolution_var.get()
-        self.output_resolution = tuple(map(int, resolution_str.split('x')))
-        self.custom_ffmpeg_args = self.ffmpeg_entry.get().split() if self.ffmpeg_entry.get() else None
-        self.watermark_text = self.watermark_entry.get() or None
-        self.update_channel = self.update_channel_var.get()
-        settings = {
-            "motion_threshold": self.motion_threshold,
-            "white_threshold": self.white_threshold,
-            "black_threshold": self.black_threshold,
-            "clip_limit": self.clip_limit,
-            "saturation_multiplier": self.saturation_multiplier,
-            "music_volume": self.music_volume,
-            "music_paths": {str(k): v for k, v in self.music_paths.items()},
-            "output_dir": self.output_dir,
-            "custom_ffmpeg_args": self.custom_ffmpeg_args,
-            "watermark_text": self.watermark_text,
-            "update_channel": self.update_channel,
-            "output_resolution": resolution_str
-        }
-        with open("settings.json", "w") as f:
-            json.dump(settings, f)
-        log_session(f"Settings saved: {time.time() - start_time:.2f}s")
+            except Exception as e:
+                log_session(f"Failed to load settings: {str(e)}")
+        log_session(f"Settings loaded: {time.time() - start_time:.2f}s")
 
     def load_presets(self):
-        """Load presets from JSON."""
         start_time = time.time()
-        try:
-            with open("presets.json", "r") as f:
-                self.presets = json.load(f)
-            self.preset_combobox.configure(values=list(self.presets.keys()))
-            log_session(f"Presets loaded: {time.time() - start_time:.2f}s")
-        except (FileNotFoundError, json.JSONDecodeError):
-            log_session(f"No presets found: {time.time() - start_time:.2f}s")
-            self.presets = {}
+        if os.path.exists('presets.json'):
+            try:
+                with open('presets.json', 'r') as f:
+                    self.presets = json.load(f)
+            except Exception as e:
+                log_session(f"Failed to load presets: {str(e)}")
+        log_session(f"Presets loaded: {time.time() - start_time:.2f}s")
 
-    def save_preset(self):
-        """Save current settings as preset."""
+    def check_system_specs(self):
+        """Check system specifications and dependencies."""
         start_time = time.time()
-        preset_name = self.preset_name_entry.get()
-        if preset_name:
-            self.presets[preset_name] = {
-                "motion_threshold": int(self.motion_slider.get()),
-                "white_threshold": int(self.white_slider.get()),
-                "black_threshold": int(self.black_slider.get()),
-                "clip_limit": float(self.clip_slider.get()),
-                "saturation_multiplier": float(self.saturation_slider.get())
-            }
-            with open("presets.json", "w") as f:
-                json.dump(self.presets, f)
-            self.preset_combobox.configure(values=list(self.presets.keys()))
-            log_session(f"Saved preset {preset_name}: {time.time() - start_time:.2f}s")
-
-    def load_preset(self):
-        """Load selected preset."""
-        start_time = time.time()
-        preset_name = self.preset_combobox.get()
-        if preset_name in self.presets:
-            preset = self.presets[preset_name]
-            self.motion_slider.set(preset.get("motion_threshold", 3000))
-            self.white_slider.set(preset.get("white_threshold", 200))
-            self.black_slider.set(preset.get("black_threshold", 50))
-            self.clip_slider.set(preset.get("clip_limit", 1.0))
-            self.saturation_slider.set(preset.get("saturation_multiplier", 1.1))
-            self.update_settings(0)
-            log_session(f"Loaded preset {preset_name}: {time.time() - start_time:.2f}s")
-
-    def reset_to_default(self):
-        """Reset settings to defaults."""
-        start_time = time.time()
-        self.motion_slider.set(3000)
-        self.white_slider.set(200)
-        self.black_slider.set(50)
-        self.clip_slider.set(1.0)
-        self.saturation_slider.set(1.1)
-        self.resolution_var.set("1920x1080")
-        self.music_volume_slider.set(1.0)
-        self.output_dir = None
-        self.output_dir_label.configure(text="Default")
-        self.ffmpeg_entry.delete(0, tk.END)
-        self.watermark_entry.delete(0, tk.END)
-        self.update_channel_var.set("Stable")
-        self.update_settings(0)
-        self.update_volume_label(1.0)
-        log_session(f"Reset settings to default: {time.time() - start_time:.2f}s")
+        
+        # Check FFmpeg installation
+        if not shutil.which('ffmpeg'):
+            log_session("FFmpeg not found")
+            messagebox.showerror("Error", "FFmpeg is not installed or not in PATH. Please install FFmpeg to continue.")
+            raise RuntimeError("FFmpeg not found")
+        
+        # Check CPU cores
+        cpu_cores = psutil.cpu_count(logical=True)
+        min_cores = 2
+        if cpu_cores < min_cores:
+            log_session(f"Low CPU cores: {cpu_cores} (recommended: {min_cores})")
+            messagebox.showwarning("Warning", f"Low CPU cores detected ({cpu_cores}). Recommended: {min_cores} or more.")
+        
+        # Check available memory
+        memory = psutil.virtual_memory()
+        free_memory_mb = memory.available / (1024 * 1024)  # Convert to MB
+        min_memory_mb = 4096  # 4GB
+        if free_memory_mb < min_memory_mb:
+            log_session(f"Low memory: {free_memory_mb:.2f}MB (recommended: {min_memory_mb}MB)")
+            messagebox.showwarning("Warning", f"Low memory detected ({free_memory_mb:.2f}MB). Recommended: {min_memory_mb}MB or more.")
+        
+        # Check disk space
+        default_output_dir = os.getcwd()  # Use current directory if output_dir is not set
+        disk = psutil.disk_usage(default_output_dir)
+        free_space_gb = disk.free / (1024 * 1024 * 1024)  # Convert to GB
+        min_space_gb = 10  # 10GB
+        if free_space_gb < min_space_gb:
+            log_session(f"Low disk space: {free_space_gb:.2f}GB (recommended: {min_space_gb}GB)")
+            messagebox.showwarning("Warning", f"Low disk space detected ({free_space_gb:.2f}GB). Recommended: {min_space_gb}GB or more.")
+        
+        log_session(f"System specs: CPU cores={cpu_cores}, Free memory={free_memory_mb:.2f}MB, Free disk space={free_space_gb:.2f}GB")
+        log_session(f"System specs check completed: {time.time() - start_time:.2f}s")
 
     def check_for_updates(self):
         """Check for software updates."""
