@@ -1,9 +1,10 @@
 import logging
+import os
 from datetime import datetime
 import psutil
 import requests
 import time
-import tkinter as tk
+import threading
 from tkinter import Toplevel, Label
 
 try:
@@ -31,9 +32,9 @@ session_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
 session_logger.addHandler(session_handler)
 session_logger.setLevel(logging.INFO)
 
-thread_lock = tk.Lock()
+thread_lock = threading.Lock()
 cancel_events = {}  # dict for per-task cancellation
-pause_event = tk.Event()  # for pause/resume
+pause_event = threading.Event()  # for pause/resume
 pause_event.set()  # Initially not paused
 
 BATCH_SIZE = 4
@@ -46,12 +47,52 @@ def log_session(message):
 def check_system_specs():
     """Adjust processing parameters based on system specifications."""
     global BATCH_SIZE, WORKER_PROCESSES
-    # Same as original
+    cpu_cores = os.cpu_count() or 1
+    total_ram_gb = psutil.virtual_memory().total / (1024 ** 3)
+
+    if total_ram_gb < 8:
+        BATCH_SIZE = max(1, cpu_cores // 2)
+        WORKER_PROCESSES = 1
+    elif total_ram_gb < 16:
+        BATCH_SIZE = max(2, cpu_cores // 2)
+        WORKER_PROCESSES = min(2, cpu_cores)
+    elif total_ram_gb < 32:
+        BATCH_SIZE = max(4, cpu_cores)
+        WORKER_PROCESSES = min(4, cpu_cores)
+    else:
+        BATCH_SIZE = max(8, cpu_cores * 2)
+        WORKER_PROCESSES = min(8, cpu_cores)
+
+    log_session(f"System specs: CPU cores={cpu_cores}, RAM={total_ram_gb:.2f} GB")
+    log_session(f"Configured: Batch size={BATCH_SIZE}, Workers={WORKER_PROCESSES}")
 
 def check_disk_space(required_mb=500):
     """Check if there's enough disk space for processing."""
-    # Same as original
+    total, used, free = psutil.disk_usage(os.path.dirname(os.path.abspath(__file__)))
+    free_mb = free / (1024 * 1024)
+    if free_mb < required_mb:
+        log_session(f"Insufficient disk space: {free_mb:.2f} MB free")
+        return False
+    return True
 
 class ToolTip:
     """Simple tooltip class for CustomTkinter widgets."""
-    # Same as original
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tooltip = None
+        self.widget.bind("<Enter>", self.show_tooltip)
+        self.widget.bind("<Leave>", self.hide_tooltip)
+
+    def show_tooltip(self, event=None):
+        x, y = self.widget.winfo_pointerxy()
+        self.tooltip = Toplevel(self.widget)
+        self.tooltip.wm_overrideredirect(True)
+        self.tooltip.wm_geometry(f"+{x+20}+{y+20}")
+        label = Label(self.tooltip, text=self.text, bg="yellow", relief="solid", borderwidth=1, padx=5, pady=3)
+        label.pack()
+
+    def hide_tooltip(self, event=None):
+        if self.tooltip:
+            self.tooltip.destroy()
+            self.tooltip = None

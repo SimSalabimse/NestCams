@@ -1,22 +1,29 @@
-Requires Python 3.8 or later (3.12 recommended; 3.13 supported with compatible wheels)
-GUI dependencies
-customtkinter==5.2.2  # Modern Tkinter-based GUI library
-tkinterdnd2==0.4.3    # Drag-and-drop support for Tkinter
-Image and video processing
-opencv-python==4.12.0.88  # OpenCV for video frame processing (updated for compatibility)
-numpy==2.3.2              # Numerical operations for motion detection
-Pillow==11.3.0            # Image handling for previews
-matplotlib==3.10.5        # Analytics charts
-YouTube API and authentication
-google-api-python-client==2.179.0  # YouTube API for video uploads (updated)
-google-auth-oauthlib==1.2.2        # OAuth2 authentication (updated)
+# Requirements for Bird Box Video Processor v10.0.0
+# Compatible with Python 3.8 or later. Python 3.12 is recommended. Python 3.13 requires compatible wheels for some dependencies.
+
+# GUI dependencies
+customtkinter==5.2.2      # Modern Tkinter-based GUI library
+tkinterdnd2==0.4.3        # Drag-and-drop support for Tkinter
+
+# Image and video processing
+opencv-python==4.10.0.84  # OpenCV for video frame processing (compatible with Python 3.13/macOS)
+numpy==1.26.4             # Numerical operations for motion detection
+Pillow==10.4.0            # Image handling for previews
+matplotlib==3.9.2         # Analytics charts (compatible with Python 3.13)
+
+# YouTube API and authentication
+google-api-python-client==2.140.0  # YouTube API for video uploads
+google-auth-oauthlib==1.2.1        # OAuth2 authentication
 google-auth-httplib2==0.2.0        # HTTP client for Google APIs
-uritemplate==4.2.0                 # URI template parsing for Google APIs (updated)
-Network and system utilities
-requests==2.32.4      # HTTP requests for update checks (updated)
-psutil==7.0.0         # System resource monitoring (CPU, RAM) (updated)
-Scheduling and version management
+uritemplate==4.1.1                 # URI template parsing for Google APIs
+
+# Network and system utilities
+requests==2.32.3      # HTTP requests for update checks
+psutil==6.0.0         # System resource monitoring (CPU, RAM)
+
+# Scheduling and version management
 schedule==1.2.2       # Simple scheduling for automated tasks
-packaging==25.0       # Version parsing for update checks (updated)
-Optional: Network speed testing
-speedtest-cli==2.1.3  # For upload speed checks (now included, compatible)
+packaging==24.1       # Version parsing for update checks
+
+# Optional: Network speed testing
+speedtest-cli==2.1.3  # For upload speed checks (optional, install manually if needed)
