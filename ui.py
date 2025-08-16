@@ -4,6 +4,8 @@ from tkinter import filedialog, messagebox
 import os
 import json
 from PIL import Image
+import cv2  # Added import for cv2
+import time  # Added import for time
 from video_processing import process_single_video, generate_output_video, get_selected_indices, compute_motion_score, is_white_or_black_frame, normalize_frame, process_frame_batch, probe_video_resolution
 from youtube_upload import start_upload, upload_to_youtube, get_youtube_client
 from utils import log_session, ToolTip, validate_video_file, check_network_stability
