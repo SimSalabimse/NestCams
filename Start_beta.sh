@@ -9,4 +9,4 @@ echo "Starting..."
 source venv/bin/activate
 
 echo "Started"
-python app.pyw
+python movie_10.0.0_beta.pyw
