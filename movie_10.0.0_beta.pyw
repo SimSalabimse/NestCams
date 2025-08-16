@@ -190,7 +190,9 @@ class VideoProcessorApp:
 
     def setup_main_tab(self):
         """Setup Main tab UI."""
-        self.label = ctk.CTkLabel(self.main_tab, text="Select Input Video(s) or Drag & Drop")
+        # Update label to indicate drag-and-drop availability
+        label_text = "Select Input Video(s)" + (" or Drag & Drop" if TkinterDnD else "")
+        self.label = ctk.CTkLabel(self.main_tab, text=label_text)
         self.label.pack(pady=10)
         self.generate_60s = tk.BooleanVar(value=True)
         self.switch_60s = ctk.CTkSwitch(self.main_tab, text="Generate 60s Video", variable=self.generate_60s)
@@ -1331,6 +1333,9 @@ def check_network_stability():
         return False
 
 if __name__ == "__main__":
-    root = ctk.CTk()
+    if TkinterDnD:
+        root = TkinterDnD.TkinterDnD2()
+    else:
+        root = ctk.CTk()
     app = VideoProcessorApp(root)
     root.mainloop()
