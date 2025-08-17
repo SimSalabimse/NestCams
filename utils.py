@@ -3,6 +3,8 @@ import os
 from datetime import datetime
 import subprocess
 import requests
+import queue
+import threading
 try:
     import speedtest
 except ImportError:
@@ -19,16 +21,42 @@ logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
+
+# Session logging with QueueHandler
 session_log_file = os.path.join(log_dir, f"session_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
 session_logger = logging.getLogger('session')
-session_handler = logging.FileHandler(session_log_file)
-session_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
-session_logger.addHandler(session_handler)
 session_logger.setLevel(logging.INFO)
+log_queue = queue.Queue(-1)  # Unbounded queue for simplicity
+queue_handler = logging.handlers.QueueHandler(log_queue)
+session_logger.addHandler(queue_handler)
+
+# File handler for writing to session log file
+file_handler = logging.FileHandler(session_log_file)
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+
+def log_listener(queue, handler):
+    """Listen to log queue and write to file."""
+    while True:
+        try:
+            record = queue.get()
+            if record is None:  # None is a signal to stop
+                break
+            handler.handle(record)
+        except Exception as e:
+            print(f"Log listener error: {e}")
+
+# Start logging thread
+listener_thread = threading.Thread(target=log_listener, args=(log_queue, file_handler), daemon=True)
+listener_thread.start()
 
 def log_session(message):
-    """Log a message to the session log file."""
+    """Log a message to the session log via queue."""
     session_logger.info(message)
+
+def stop_logging():
+    """Stop the logging thread gracefully."""
+    log_queue.put(None)
+    listener_thread.join(timeout=1.0)
 
 class ToolTip:
     """Tooltip class for GUI usability."""

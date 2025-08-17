@@ -10,7 +10,6 @@ from multiprocessing import Pool
 from utils import log_session
 
 def process_single_video(app, input_file, selected_videos, output_format, total_tasks, task_count_queue):
-    """Process single video."""
     try:
         base, _ = os.path.splitext(input_file)
         output_files = {}
@@ -60,8 +59,22 @@ def process_single_video(app, input_file, selected_videos, output_format, total_
         app.queue.put(("canceled", input_file, str(e)))
         return None
 
+def debug_get_selected_indices(app):
+    start_time = time.time()
+    log_session("Debug: Simulating motion detection")
+    total_frames = 1000
+    selected_indices = [i for i in range(total_frames) if i % 10 == 0]
+    motion_scores = [app.motion_threshold + (i % 100) * 100 for i in range(total_frames)]
+    for i in range(0, total_frames, 100):
+        progress = (i / total_frames) * 100
+        elapsed = time.time() - start_time
+        rate = i / elapsed if elapsed > 0 else 0
+        remaining = (total_frames - i) / rate if rate > 0 else 0
+        app.queue.put(("progress", "debug_motion_test.mp4", "Motion Detection", progress, i, total_frames, remaining))
+    log_session(f"Debug: Motion detection simulated with {len(selected_indices)} indices")
+    return selected_indices, motion_scores
+
 def get_selected_indices(app, input_path, progress_callback=None):
-    """Identify frames with motion."""
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
         log_session(f"Cannot open {input_path}")
@@ -97,7 +110,6 @@ def get_selected_indices(app, input_path, progress_callback=None):
     return selected_indices, motion_scores
 
 def compute_motion_score(prev_frame, current_frame, threshold=30):
-    """Compute motion score between frames."""
     if prev_frame is None or current_frame is None:
         return 0
     prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
@@ -107,42 +119,57 @@ def compute_motion_score(prev_frame, current_frame, threshold=30):
     return score
 
 def is_white_or_black_frame(app, frame):
-    """Check if frame is overly white or black."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     mean_brightness = np.mean(gray)
     return mean_brightness > app.white_threshold or mean_brightness < app.black_threshold
 
 def normalize_frame(app, frame, output_resolution, clip_limit, saturation_multiplier):
-    """Normalize and enhance frame."""
     try:
         frame = cv2.resize(frame, output_resolution, interpolation=cv2.INTER_AREA)
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
         clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
-        l_clahe = clahe.apply(l)
-        lab_clahe = cv2.merge((l_clahe, a, b))
-        frame_clahe = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
-        hsv = cv2.cvtColor(frame_clahe, cv2.COLOR_BGR2HSV)
+        l = clahe.apply(l)
+        lab = cv2.merge((l, a, b))
+        frame = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         h, s, v = cv2.split(hsv)
-        s = cv2.multiply(s, saturation_multiplier, dtype=cv2.CV_8U)
-        hsv_enhanced = cv2.merge((h, s, v))
-        return cv2.cvtColor(hsv_enhanced, cv2.COLOR_HSV2BGR)
+        s = np.clip(s * saturation_multiplier, 0, 255).astype(np.uint8)
+        hsv = cv2.merge((h, s, v))
+        frame = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+        return frame
     except Exception as e:
-        log_session(f"Frame normalization error: {str(e)}")
+        log_session(f"Error normalizing frame: {str(e)}")
         return None
 
-def process_frame_batch(app, input_path, clip_limit, saturation_multiplier, rotate, temp_dir, tasks, output_resolution):
-    """Process batch of frames."""
-    results = []
+def debug_normalize_frame(app, frame):
+    try:
+        log_session("Debug: Simulating frame normalization")
+        frame = cv2.resize(frame, app.output_resolution, interpolation=cv2.INTER_AREA)
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=app.clip_limit, tileGridSize=(8, 8))
+        l = clahe.apply(l)
+        lab = cv2.merge((l, a, b))
+        frame = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        h, s, v = cv2.split(hsv)
+        s = np.clip(s * app.saturation_multiplier, 0, 255).astype(np.uint8)
+        hsv = cv2.merge((h, s, v))
+        frame = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+        log_session("Debug: Frame normalization successful")
+        return frame
+    except Exception as e:
+        log_session(f"Debug: Error normalizing frame: {str(e)}")
+        return None
+
+def process_frame_batch(app, input_path, clip_limit, saturation_multiplier, rotate, temp_dir, frame_tasks, output_resolution):
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
-        return results
-    for frame_idx, order in tasks:
-        if app.cancel_event.is_set():
-            cap.release()
-            return results
-        while app.pause_event.is_set() and not app.cancel_event.is_set():
-            time.sleep(0.1)
+        log_session(f"Cannot open {input_path} in process_frame_batch")
+        return []
+    results = []
+    for frame_idx, order in frame_tasks:
         cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = cap.read()
         if not ret:
@@ -159,14 +186,38 @@ def process_frame_batch(app, input_path, clip_limit, saturation_multiplier, rota
     return results
 
 def probe_video_resolution(video_path):
-    """Probe video resolution using FFmpeg."""
     cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', video_path]
     output = subprocess.check_output(cmd).decode().strip()
     width, height = map(int, output.split(','))
     return width, height
 
+def debug_generate_output_video(app, input_path, desired_duration):
+    start_time = time.time()
+    log_session("Debug: Simulating video generation")
+    fps = 30
+    total_frames = 1000
+    selected_indices = [i for i in range(0, total_frames, 10)]
+    target_frames_count = int(desired_duration * fps)
+    if len(selected_indices) > target_frames_count:
+        step = len(selected_indices) / target_frames_count
+        final_indices = [selected_indices[int(i * step)] for i in range(target_frames_count)]
+    else:
+        final_indices = selected_indices
+    app.queue.put(("status", input_path, "Debug: Processing frames..."))
+    frame_counter = len(final_indices)
+    for i in range(0, frame_counter, app.batch_size):
+        progress = (i / frame_counter) * 100
+        app.queue.put(("progress", input_path, f"Generating {desired_duration}s", progress, i, frame_counter, 0))
+    app.queue.put(("status", input_path, "Debug: Creating video..."))
+    if app.music_paths.get(desired_duration, app.music_paths.get("default")):
+        app.queue.put(("status", input_path, "Debug: Adding music..."))
+    else:
+        app.queue.put(("status", input_path, "Debug: Adding silent audio..."))
+    app.queue.put(("progress", input_path, f"Generating {desired_duration}s", 100, frame_counter, frame_counter, 0))
+    log_session(f"Debug: Video generation simulated with {frame_counter} frames")
+    return None, frame_counter, len(selected_indices), time.time() - start_time
+
 def generate_output_video(app, input_path, output_path, desired_duration, selected_indices, progress_callback=None, status_callback=None):
-    """Generate output video."""
     try:
         if status_callback:
             status_callback("Opening video...")

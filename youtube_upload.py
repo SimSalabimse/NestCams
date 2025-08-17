@@ -5,6 +5,7 @@ from google.auth.transport.requests import Request
 import pickle
 from tkinter import messagebox
 from utils import log_session, validate_video_file, check_network_stability
+import time
 
 def start_upload(app, file_path, task_name, button):
     """Start YouTube upload."""
@@ -55,6 +56,16 @@ def upload_to_youtube(app, file_path, task_name, button):
                 messagebox.showerror("Error", f"Upload failed: {str(e)}")
         finally:
             button.configure(state="normal", text="Upload to YouTube")
+
+def debug_upload_to_youtube(app, file_path, task_name):
+    """Simulate YouTube upload process."""
+    start_time = time.time()
+    log_session(f"Debug: Simulating YouTube upload for {file_path}")
+    for i in range(0, 101, 10):
+        app.queue.put(("upload_progress", file_path, i))
+        time.sleep(0.05)  # Simulate upload progress
+    log_session(f"Debug: YouTube upload simulated successfully")
+    return f"Simulated upload for {task_name}: https://youtu.be/debug_{task_name}"
 
 def get_youtube_client(app):
     """Authenticate YouTube API client."""
