@@ -438,7 +438,7 @@ class NestCamApp:
             logger.error(f"Processing failed: {e}")
 
     def _render_processing_progress(self):
-        """Render processing progress"""
+        """Render processing progress with debug menu"""
         job = st.session_state.current_job
 
         st.subheader("Processing Progress")
@@ -449,6 +449,75 @@ class NestCamApp:
 
             elapsed = time.time() - job["start_time"]
             st.text(f"⏱️ Elapsed: {elapsed:.1f}s")
+
+            # Debug Menu
+            with st.expander("🔍 Debug Information", expanded=False):
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.subheader("📊 System Resources")
+
+                    # Memory usage
+                    try:
+                        import psutil
+
+                        memory = psutil.virtual_memory()
+                        st.metric("RAM Usage", f"{memory.percent:.1f}%")
+                        st.metric(
+                            "Available RAM", f"{memory.available / (1024**3):.1f}GB"
+                        )
+                    except:
+                        st.text("Memory monitoring unavailable")
+
+                    # GPU info if available
+                    try:
+                        import torch
+
+                        if torch.cuda.is_available():
+                            gpu_memory = torch.cuda.get_device_properties(
+                                0
+                            ).total_memory
+                            gpu_used = torch.cuda.memory_allocated(0)
+                            gpu_percent = (gpu_used / gpu_memory) * 100
+                            st.metric("GPU Memory", f"{gpu_percent:.1f}%")
+                        else:
+                            st.text("GPU not available")
+                    except:
+                        st.text("GPU monitoring unavailable")
+
+                with col2:
+                    st.subheader("⚙️ Processing Details")
+
+                    # Processing stage
+                    stage = job.get("stage", "Unknown")
+                    st.text(f"Stage: {stage}")
+
+                    # Frame progress
+                    current_frame = job.get("current_frame", 0)
+                    total_frames = job.get("total_frames", 0)
+                    if total_frames > 0:
+                        st.metric("Frame Progress", f"{current_frame}/{total_frames}")
+
+                    # Processing parameters
+                    st.text(f"Batch Size: {job.get('batch_size', 'N/A')}")
+                    st.text(f"Workers: {job.get('workers', 'N/A')}")
+
+                    # Performance metrics
+                    fps = job.get("fps", 0)
+                    if fps > 0:
+                        st.metric("Processing FPS", f"{fps:.1f}")
+
+                    motion_events = job.get("motion_events", 0)
+                    st.metric("Motion Events Detected", motion_events)
+
+                # Real-time logs
+                st.subheader("📝 Real-time Logs")
+                logs = job.get("logs", [])
+                if logs:
+                    log_text = "\n".join(logs[-10:])  # Show last 10 log entries
+                    st.text_area("Recent Logs", log_text, height=150, disabled=True)
+                else:
+                    st.text("No logs available yet")
 
         elif job["status"] == "completed":
             st.success("✅ Processing completed!")

@@ -164,6 +164,14 @@ class MotionDetector:
         baseline_avg = None
         baseline_count = 0
 
+        # Add debug logging
+        if progress_callback:
+            progress_callback(
+                25,
+                f"📊 Processing {total_frames} frames",
+                {"stage": "Motion Detection", "total_frames": total_frames, "fps": fps},
+            )
+
         # Process frames one by one
         for frame_idx in range(0, total_frames, self.frame_step):
             ret, frame = cap.read()
@@ -186,6 +194,20 @@ class MotionDetector:
             if score > self.config.processing.motion_threshold:
                 frame_indices.append(frame_idx)
             motion_scores.append(score)
+
+            # Add debug logging
+            if progress_callback:
+                if frame_idx % 100 == 0:  # Log every 100 frames
+                    progress_callback(
+                        (frame_idx / total_frames) * 100,
+                        f"🎬 Frame {frame_idx}/{total_frames}",
+                        {
+                            "stage": "Motion Detection",
+                            "current_frame": frame_idx,
+                            "total_frames": total_frames,
+                            "motion_events": len(frame_indices),
+                        },
+                    )
 
         # Return results without keeping frames in memory
         return MotionResult(
