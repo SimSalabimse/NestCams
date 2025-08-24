@@ -146,11 +146,30 @@ class MotionDetector:
         self, video_path: str, progress_callback=None
     ) -> MotionResult:
         """
-        Optimized two-pass motion detection for 40-60GB files
-
-        Pass 1: Fast motion detection every 4th frame (75% time reduction)
-        Pass 2: Detailed white/black threshold analysis on detected frames
+        Optimized two-pass motion detection with configurable detail levels
         """
+        # Get detailed analysis settings from config
+        use_detailed = self.config.processing.use_detailed_analysis
+        detail_level = self.config.processing.detail_level
+        context_window = self.config.processing.context_window_size
+
+        # Adjust settings based on detail level
+        if detail_level == "light":
+            second_pass_window = max(1, context_window // 2)  # Smaller context
+            analysis_methods = ["motion_diff"]  # Only basic method
+        elif detail_level == "normal":
+            second_pass_window = context_window  # Standard context
+            analysis_methods = ["white_threshold", "motion_diff"]  # Balanced methods
+        else:  # detailed
+            second_pass_window = context_window * 2  # Larger context
+            analysis_methods = [
+                "white_threshold",
+                "black_threshold",
+                "motion_diff",
+                "edge_detection",
+                "histogram",
+            ]
+
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             raise ValueError(f"Cannot open video file: {video_path}")
@@ -162,10 +181,10 @@ class MotionDetector:
         # Adaptive frame sampling based on file size
         if file_size_gb > 40:  # 40GB+ files
             first_pass_step = 5  # Process every 5th frame (80% reduction)
-            second_pass_window = 10  # ±10 frames around detected motion
+            second_pass_window = 3  # Reduced from 10 to 3 frames context
         else:  # 20-40GB files
             first_pass_step = 4  # Process every 4th frame (75% reduction)
-            second_pass_window = 8  # ±8 frames around detected motion
+            second_pass_window = 2  # Reduced from 8 to 2 frames context
 
         if progress_callback:
             progress_callback(
@@ -219,16 +238,22 @@ class MotionDetector:
                 if motion_score > 500:  # Fast motion threshold
                     potential_motion_frames.append(frame_idx)
 
-            if progress_callback and frame_idx % (first_pass_step * 50) == 0:
+            if progress_callback and frame_idx % (first_pass_step * 10) == 0:
                 progress = (frame_idx / total_frames) * 30  # 30% of total progress
                 progress_callback(
                     15 + progress,
-                    f"⚡ Fast scan: {len(potential_motion_frames)} potential motion areas",
+                    f"⚡ Fast scan: {len(potential_motion_frames)} potential motion areas | Frame: {frame_idx}/{total_frames}",
                     {
                         "stage": "Pass 1 - Fast Detection",
                         "current_frame": frame_idx,
+                        "total_frames": total_frames,
                         "potential_motion": len(potential_motion_frames),
                         "progress": f"{progress:.1f}%",
+                        "frames_per_second": (
+                            f"{(frame_idx / max(1, time.time() - start_time)):.1f}"
+                            if "start_time" in locals()
+                            else "N/A"
+                        ),
                     },
                 )
 
@@ -247,7 +272,7 @@ class MotionDetector:
             end_frame = min(total_frames, motion_frame + second_pass_window + 1)
             detailed_frames.update(range(start_frame, end_frame))
 
-        # Sort for efficient processing
+        # Sort and remove duplicates (set already handles this)
         detailed_frames = sorted(list(detailed_frames))
 
         # Detailed second pass with white/black thresholds
@@ -274,13 +299,13 @@ class MotionDetector:
 
             processed_count += 1
 
-            if progress_callback and processed_count % 20 == 0:
+            if progress_callback and processed_count % 50 == 0:  # Changed from 20 to 50
                 progress = (
                     45 + (processed_count / len(detailed_frames)) * 50
                 )  # 50% more
                 progress_callback(
                     progress,
-                    f"🎨 Detailed analysis: {len(final_motion_frames)} motion events",
+                    f"🎨 Detailed analysis: {len(final_motion_frames)} motion events ({processed_count}/{len(detailed_frames)} frames)",
                     {
                         "stage": "Pass 2 - Detailed Analysis",
                         "processed": processed_count,
@@ -314,13 +339,49 @@ class MotionDetector:
         if progress_callback:
             progress_callback(
                 95,
-                f"✅ Optimized motion detection complete: {len(final_motion_frames)} events",
+                f"⚡ Using fast scan results: {len(potential_motion_frames)} motion areas detected",
                 {
                     "stage": "Complete",
-                    "motion_events": len(final_motion_frames),
-                    "processing_reduction": f"{(1 - len(detailed_frames)/total_frames)*100:.1f}%",
+                    "motion_events": len(potential_motion_frames),
+                    "processing_reduction": f"{(1 - len(potential_motion_frames)/total_frames)*100:.1f}%",
                 },
             )
+
+        # Skip detailed analysis if disabled
+        if not use_detailed:
+            if progress_callback:
+                progress_callback(
+                    95,
+                    f"⚡ Fast scan complete: {len(potential_motion_frames)} motion areas detected",
+                    {
+                        "stage": "Complete",
+                        "motion_events": len(potential_motion_frames),
+                        "processing_reduction": f"{(1 - len(potential_motion_frames)/total_frames)*100:.1f}%",
+                    },
+                )
+
+            # Return fast scan results
+            result = MotionResult(
+                frame_indices=potential_motion_frames,
+                motion_scores=[500.0] * len(potential_motion_frames),
+                avg_motion=500.0,
+                peak_motion=500.0,
+                motion_variance=0.0,
+                total_frames=total_frames,
+                processed_frames=len(potential_motion_frames),
+            )
+            return result
+
+        # Return results from detailed analysis
+        result = MotionResult(
+            frame_indices=final_motion_frames,
+            motion_scores=final_motion_scores,
+            avg_motion=avg_motion,
+            peak_motion=peak_motion,
+            motion_variance=motion_variance,
+            total_frames=total_frames,
+            processed_frames=len(final_motion_scores),
+        )
 
         self.logger.info(
             f"Optimized motion detection completed: {len(final_motion_frames)} frames with motion "
@@ -483,35 +544,51 @@ class MotionDetector:
         return (1.0 - similarity) * 1000  # Convert to motion score
 
     def _calculate_detailed_motion_score(self, frame: np.ndarray) -> float:
-        """Detailed motion score with white/black threshold analysis"""
+        """Configurable detailed motion score with selectable analysis methods"""
         scores = []
+        methods = self.config.processing.analysis_methods
 
-        # 1. White threshold analysis (bright areas)
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        _, white_mask = cv2.threshold(
-            gray, self.config.processing.white_threshold, 255, cv2.THRESH_BINARY
-        )
-        white_score = np.sum(white_mask > 0)
-        scores.append(white_score * 0.3)  # Weight white areas
+        if "white_threshold" in methods:
+            # 1. White threshold analysis (bright areas)
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            _, white_mask = cv2.threshold(
+                gray, self.config.processing.white_threshold, 255, cv2.THRESH_BINARY
+            )
+            white_score = np.sum(white_mask > 0)
+            scores.append(white_score * 0.3)
 
-        # 2. Black threshold analysis (dark areas)
-        _, black_mask = cv2.threshold(
-            gray, self.config.processing.black_threshold, 255, cv2.THRESH_BINARY_INV
-        )
-        black_score = np.sum(black_mask > 0)
-        scores.append(black_score * 0.2)  # Weight black areas
+        if "black_threshold" in methods:
+            # 2. Black threshold analysis (dark areas)
+            _, black_mask = cv2.threshold(
+                gray, self.config.processing.black_threshold, 255, cv2.THRESH_BINARY_INV
+            )
+            black_score = np.sum(black_mask > 0)
+            scores.append(black_score * 0.2)
 
-        # 3. Edge detection (motion boundaries)
-        edges = cv2.Canny(frame, 100, 200)
-        edge_score = np.sum(edges > 0)
-        scores.append(edge_score * 0.2)
+        if "edge_detection" in methods:
+            # 3. Edge detection (motion boundaries)
+            edges = cv2.Canny(frame, 100, 200)
+            edge_score = np.sum(edges > 0)
+            scores.append(edge_score * 0.2)
 
-        # 4. Color histogram comparison (scene changes)
-        hist = cv2.calcHist(
-            [frame], [0, 1, 2], None, [16, 16, 16], [0, 256, 0, 256, 0, 256]
-        )
-        cv2.normalize(hist, hist, 0, 1, cv2.NORM_MINMAX)
-        hist_score = np.sum(hist > 0.01)  # Count significant histogram bins
-        scores.append(hist_score * 0.3)
+        if "histogram" in methods:
+            # 4. Color histogram comparison (scene changes)
+            hist = cv2.calcHist(
+                [frame], [0, 1, 2], None, [16, 16, 16], [0, 256, 0, 256, 0, 256]
+            )
+            cv2.normalize(hist, hist, 0, 1, cv2.NORM_MINMAX)
+            hist_score = np.sum(hist > 0.01)
+            scores.append(hist_score * 0.3)
 
-        return sum(scores)
+        if "motion_diff" in methods:
+            # 5. Simple motion difference (always included for reliability)
+            if hasattr(self, "_previous_frame") and self._previous_frame is not None:
+                diff = cv2.absdiff(frame, self._previous_frame)
+                gray_diff = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+                motion_score = np.sum(gray_diff > 30)
+                scores.append(motion_score * 0.4)
+
+        # Store current frame for next comparison
+        self._previous_frame = frame.copy()
+
+        return sum(scores) if scores else 0.0

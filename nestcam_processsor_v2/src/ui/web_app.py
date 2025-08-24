@@ -68,6 +68,8 @@ except ImportError:
     HAS_GPU = False
     print("⚠️ GPU acceleration not available (install cupy for CUDA support)")
 
+import re
+
 
 # Memory monitoring (optional)
 def get_memory_usage():
@@ -113,6 +115,64 @@ class NestCamApp:
             st.session_state.output_dir = ""
         if "dark_mode" not in st.session_state:
             st.session_state.dark_mode = False
+
+        # Load saved stats
+        self._load_stats()
+
+    def _load_stats(self):
+        """Load processing statistics from disk"""
+        stats_file = config.data_dir / "processing_stats.json"
+        if stats_file.exists():
+            try:
+                with open(stats_file, "r") as f:
+                    saved_stats = json.load(f)
+                    if "processing_history" in saved_stats:
+                        st.session_state.processing_history = saved_stats[
+                            "processing_history"
+                        ]
+            except Exception as e:
+                logger.warning(f"Could not load saved stats: {e}")
+
+    def _save_stats(self):
+        """Save processing statistics to disk"""
+        stats_file = config.data_dir / "processing_stats.json"
+        stats_file.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            with open(stats_file, "w") as f:
+                json.dump(
+                    {
+                        "processing_history": st.session_state.processing_history,
+                        "last_updated": datetime.now().isoformat(),
+                    },
+                    f,
+                    default=str,
+                )
+        except Exception as e:
+            logger.warning(f"Could not save stats: {e}")
+
+    def _validate_progress(self, progress):
+        """Validate and convert progress value to valid numeric format"""
+        try:
+            if isinstance(progress, str):
+                # Try to extract numeric value from string
+                numeric_match = re.search(r"(\d+\.?\d*)", progress)
+                if numeric_match:
+                    progress = float(numeric_match.group(1))
+                else:
+                    progress = 0.0
+            elif progress is None:
+                progress = 0.0
+            elif not isinstance(progress, (int, float)):
+                progress = 0.0
+
+            # Ensure progress is in valid range (0.0 to 100.0)
+            progress = max(0.0, min(100.0, float(progress)))
+
+            return progress
+        except Exception as e:
+            logger.warning(f"Progress validation error: {e}")
+            return 0.0
 
     def run(self):
         """Run the Streamlit application"""
@@ -186,6 +246,177 @@ class NestCamApp:
                 max_value=100,
                 value=config.processing.black_threshold,
             )
+
+            st.divider()
+
+            # Detailed Analysis Settings - Store in session state first
+            st.subheader("Motion Detection Analysis")
+
+            # Get current values with defaults
+            current_use_detailed = getattr(
+                config.processing, "use_detailed_analysis", True
+            )
+            current_detail_level = getattr(config.processing, "detail_level", "normal")
+            current_context_window = getattr(
+                config.processing, "context_window_size", 3
+            )
+            current_methods = getattr(
+                config.processing,
+                "analysis_methods",
+                ["white_threshold", "motion_diff"],
+            )
+
+            # Store in session state to avoid config assignment issues
+            if "detailed_analysis_settings" not in st.session_state:
+                st.session_state.detailed_analysis_settings = {
+                    "use_detailed_analysis": current_use_detailed,
+                    "detail_level": current_detail_level,
+                    "context_window_size": current_context_window,
+                    "analysis_methods": current_methods,
+                }
+
+            # Use session state values
+            use_detailed = st.checkbox(
+                "Use Detailed Analysis",
+                value=st.session_state.detailed_analysis_settings[
+                    "use_detailed_analysis"
+                ],
+                help="Enable Pass 2 detailed motion analysis (slower but more accurate)",
+            )
+            st.session_state.detailed_analysis_settings["use_detailed_analysis"] = (
+                use_detailed
+            )
+
+            if use_detailed:
+                # Detail level selection
+                detail_options = {
+                    "light": "⚡ Light - Fast, basic analysis",
+                    "normal": "🔍 Normal - Balanced speed/accuracy",
+                    "detailed": "🎯 Detailed - Slow, comprehensive analysis",
+                }
+
+                selected_detail = st.selectbox(
+                    "Analysis Detail Level",
+                    options=list(detail_options.keys()),
+                    format_func=lambda x: detail_options[x],
+                    index=list(detail_options.keys()).index(
+                        st.session_state.detailed_analysis_settings["detail_level"]
+                    ),
+                    help="Higher detail = better accuracy but slower processing",
+                )
+                st.session_state.detailed_analysis_settings["detail_level"] = (
+                    selected_detail
+                )
+
+                # Context window size
+                context_window = st.slider(
+                    "Context Window Size",
+                    min_value=1,
+                    max_value=10,
+                    value=st.session_state.detailed_analysis_settings[
+                        "context_window_size"
+                    ],
+                    help="Frames around detected motion to analyze (higher = more accurate but slower)",
+                )
+                st.session_state.detailed_analysis_settings["context_window_size"] = (
+                    context_window
+                )
+
+                # Analysis methods
+                st.markdown("**Analysis Methods**")
+                available_methods = {
+                    "white_threshold": "White threshold detection",
+                    "black_threshold": "Black threshold detection",
+                    "motion_diff": "Motion difference analysis",
+                    "edge_detection": "Edge detection",
+                    "histogram": "Color histogram comparison",
+                }
+
+                selected_methods = []
+                for method_key, method_desc in available_methods.items():
+                    if st.checkbox(
+                        method_desc,
+                        value=method_key
+                        in st.session_state.detailed_analysis_settings[
+                            "analysis_methods"
+                        ],
+                        key=f"method_{method_key}",
+                    ):
+                        selected_methods.append(method_key)
+
+                st.session_state.detailed_analysis_settings["analysis_methods"] = (
+                    selected_methods
+                )
+
+                # Performance info
+                if selected_detail == "light":
+                    st.info(
+                        "⚡ **Light Mode**: ~2-3x faster, good for basic motion detection"
+                    )
+                elif selected_detail == "normal":
+                    st.info(
+                        "🔍 **Normal Mode**: Balanced performance, recommended for most uses"
+                    )
+                else:  # detailed
+                    st.warning(
+                        "🎯 **Detailed Mode**: ~5-10x slower, best accuracy for critical analysis"
+                    )
+            else:
+                st.info("⚡ **Fast Mode Only**: Using Pass 1 fast scan only (fastest)")
+
+            # Save settings button
+            if st.button("💾 Save Settings", key="save_detailed_settings"):
+                # Update config with session state values using __dict__ approach first
+                try:
+                    # Primary method: use __dict__ to bypass Pydantic validation
+                    config.processing.__dict__["use_detailed_analysis"] = (
+                        st.session_state.detailed_analysis_settings[
+                            "use_detailed_analysis"
+                        ]
+                    )
+                    config.processing.__dict__["detail_level"] = (
+                        st.session_state.detailed_analysis_settings["detail_level"]
+                    )
+                    config.processing.__dict__["context_window_size"] = (
+                        st.session_state.detailed_analysis_settings[
+                            "context_window_size"
+                        ]
+                    )
+                    config.processing.__dict__["analysis_methods"] = (
+                        st.session_state.detailed_analysis_settings["analysis_methods"]
+                    )
+
+                    # Try direct assignment as backup (in case __dict__ approach fails)
+                    try:
+                        config.processing.use_detailed_analysis = (
+                            st.session_state.detailed_analysis_settings[
+                                "use_detailed_analysis"
+                            ]
+                        )
+                        config.processing.detail_level = (
+                            st.session_state.detailed_analysis_settings["detail_level"]
+                        )
+                        config.processing.context_window_size = (
+                            st.session_state.detailed_analysis_settings[
+                                "context_window_size"
+                            ]
+                        )
+                        config.processing.analysis_methods = (
+                            st.session_state.detailed_analysis_settings[
+                                "analysis_methods"
+                            ]
+                        )
+                    except (AttributeError, ValueError):
+                        # If direct assignment fails, __dict__ approach already worked
+                        pass
+
+                except Exception as e:
+                    st.error(f"Failed to save settings: {e}")
+                    # Don't save if there were errors
+                    st.stop()
+
+                config.save_to_file()
+                st.success("Settings saved!")
 
             # Output settings
             st.subheader("Output Settings")
@@ -264,9 +495,51 @@ class NestCamApp:
             )
 
             # Save settings button
-            if st.button("💾 Save Settings"):
+            if st.button("💾 Save Settings", key="save_general_settings"):
                 config.save_to_file()
                 st.success("Settings saved!")
+
+            # Processing State Settings
+            st.divider()
+            st.subheader("💾 Processing State")
+            st.markdown("**📁 Processing State Directory**")
+
+            # Default processing state directory
+            default_state_dir = os.path.join(os.getcwd(), "processing_states")
+            if (
+                not hasattr(config.processing, "processing_state_dir")
+                or config.processing.processing_state_dir is None
+            ):
+                config.processing.__dict__["processing_state_dir"] = Path(
+                    default_state_dir
+                )
+
+            state_dir_input = st.text_input(
+                "Processing state directory:",
+                value=str(config.processing.processing_state_dir),
+                placeholder=default_state_dir,
+                help="Directory to save processing states for resume functionality",
+            )
+
+            if st.button(
+                "📁 Create State Directory",
+                help="Create the processing state directory",
+            ):
+                try:
+                    os.makedirs(state_dir_input, exist_ok=True)
+                    config.processing.__dict__["processing_state_dir"] = Path(
+                        state_dir_input
+                    )
+                    st.success(f"✅ Created: {state_dir_input}")
+                except Exception as e:
+                    st.error(f"❌ Failed to create directory: {e}")
+
+            # Enable resume functionality
+            config.processing.__dict__["enable_resume"] = st.checkbox(
+                "Enable Resume Functionality",
+                value=getattr(config.processing, "enable_resume", True),
+                help="Save processing state to resume interrupted processing",
+            )
 
     def _render_main_content(self):
         """Render main content area"""
@@ -331,43 +604,179 @@ class NestCamApp:
                     value=config.upload.privacy_status if add_watermark else "",
                 )
 
-            # Start processing button
-            if st.button("🚀 Start Processing", type="primary"):
+            # Capture settings BEFORE processing starts
+            use_optimized = st.checkbox(
+                "💾 Memory-Efficient Mode",
+                value=True,
+                help="Use less memory (recommended for large files)",
+            )
+            use_gpu = st.checkbox(
+                "🚀 Use GPU Acceleration",
+                value=True,
+                help="Enable GPU processing for faster results",
+            )
+
+            # Start processing button - DISABLED during processing
+            is_processing = (
+                st.session_state.current_job is not None
+                and st.session_state.current_job.get("status") == "running"
+            )
+
+            if st.button(
+                "🚀 Start Processing" if not is_processing else "⏳ Processing...",
+                type="primary",
+                disabled=is_processing or len(st.session_state.uploaded_files) == 0,
+            ):
                 self._start_processing(
                     st.session_state.uploaded_files,
                     output_format,
                     st.session_state.output_dir,
                     add_watermark,
                     watermark_text,
+                    use_optimized,  # Pass settings
+                    use_gpu,
                 )
+
+        # Check for resumable processing
+        if getattr(config.processing, "enable_resume", True):
+            state_dir = getattr(config.processing, "processing_state_dir", None)
+            if state_dir and Path(state_dir).exists():
+                state_files = list(Path(state_dir).glob("processing_state_*.json"))
+                if state_files:
+                    st.subheader("🔄 Resume Processing")
+                    st.info("Found interrupted processing sessions:")
+
+                    for state_file in sorted(
+                        state_files, key=lambda x: x.stat().st_mtime, reverse=True
+                    ):
+                        try:
+                            with open(state_file, "r") as f:
+                                state_data = json.load(f)
+
+                            timestamp = datetime.fromisoformat(state_data["timestamp"])
+                            st.write(
+                                f"📁 Session from {timestamp.strftime('%Y-%m-%d %H:%M:%S')}"
+                            )
+
+                            col1, col2 = st.columns([3, 1])
+                            with col1:
+                                st.write(
+                                    f"Progress: {state_data['current_file_index'] + 1}/{len(st.session_state.uploaded_files) if st.session_state.uploaded_files else '?'} files"
+                                )
+                            with col2:
+                                if st.button(
+                                    "🔄 Resume", key=f"resume_{state_file.name}"
+                                ):
+                                    self._resume_processing(state_data)
+                                    st.rerun()
+                        except Exception as e:
+                            st.error(f"Error loading state file: {e}")
 
         # Processing progress
         if st.session_state.current_job:
             self._render_processing_progress()
 
     def _start_processing(
-        self, files, output_format, output_dir, add_watermark, watermark_text
+        self,
+        files,
+        output_format,
+        output_dir,
+        add_watermark,
+        watermark_text,
+        use_optimized,
+        use_gpu,
     ):
-        """Start video processing job"""
+        """Start video processing job with proper callback handling"""
+
+        # Initialize job with settings captured
         st.session_state.current_job = {
             "status": "running",
-            "progress": 0,
+            "progress": 0.0,  # Changed from 0 to 0.0
             "current_file": "",
             "start_time": time.time(),
+            "logs": [],  # For real-time logging
+            "settings": {
+                "use_optimized": use_optimized,
+                "use_gpu": use_gpu,
+                "output_format": output_format,
+            },
         }
 
-        # Create progress bar
+        # Force UI refresh to show updated button state
+        # Add a placeholder that will trigger UI update
+        if not hasattr(st.session_state, "button_state_placeholder"):
+            st.session_state.button_state_placeholder = st.empty()
+        st.session_state.button_state_placeholder.text("🔄 Processing started...")
+
+        # Create progress elements
         progress_bar = st.progress(0)
         status_text = st.empty()
+        elapsed_text = st.empty()
 
-        def progress_callback(progress, current_file, total_files):
-            st.session_state.current_job["progress"] = progress / 100
-            st.session_state.current_job["current_file"] = current_file
-            progress_bar.progress(progress / 100)
-            status_text.text(f"Processing: {current_file} ({int(progress)}%)")
+        def progress_callback(progress, message, debug_info=None):
+            """Enhanced progress callback with debug support"""
+            try:
+                # Validate and convert progress
+                progress = self._validate_progress(progress)
+
+                # Convert to 0.0-1.0 range for st.progress()
+                normalized_progress = progress / 100.0
+
+                # Update job progress
+                st.session_state.current_job["progress"] = normalized_progress
+
+            except Exception as e:
+                # Fallback to 0.0 if conversion fails
+                st.session_state.current_job["progress"] = 0.0
+                logger.warning(f"Failed to convert progress value '{progress}': {e}")
+
+            if isinstance(message, str):
+                # Extract file info from message if present
+                if "Processing:" in message:
+                    current_file = message.split("Processing:")[1].split("(")[0].strip()
+                    st.session_state.current_job["current_file"] = current_file
+
+                # Add to logs
+                st.session_state.current_job["logs"].append(f"{time.time()}: {message}")
+
+            # Handle debug information
+            if debug_info and isinstance(debug_info, dict):
+                st.session_state.current_job.update(debug_info)
+
+            # Update UI elements with error handling
+            try:
+                # Ensure progress is always a valid float between 0.0 and 1.0
+                current_progress = st.session_state.current_job["progress"]
+                if (
+                    not isinstance(current_progress, float)
+                    or current_progress < 0.0
+                    or current_progress > 1.0
+                ):
+                    current_progress = 0.0
+
+                progress_bar.progress(current_progress)
+                status_text.text(message)
+
+                # Show elapsed time during processing
+                elapsed = time.time() - st.session_state.current_job["start_time"]
+                elapsed_text.text(f"⏱️ Elapsed: {elapsed:.1f}s")
+
+                # Force UI refresh by updating a placeholder
+                # This ensures the debug information updates in real-time
+                if hasattr(st.session_state, "debug_placeholder"):
+                    st.session_state.debug_placeholder.empty()
+
+                # Also refresh the button state placeholder
+                if hasattr(st.session_state, "button_state_placeholder"):
+                    st.session_state.button_state_placeholder.text(
+                        f"⏳ Processing: {message}"
+                    )
+
+            except Exception as e:
+                logger.warning(f"Failed to update progress UI: {e}")
 
         try:
-            # Process videos
+            # Process videos with captured settings
             results = []
             total_files = len(files)
 
@@ -377,23 +786,14 @@ class NestCamApp:
                     f.write(uploaded_file.getbuffer())
 
                 file_path = f"temp_{uploaded_file.name}"
+
                 progress_callback(
-                    (i / total_files) * 100, uploaded_file.name, total_files
+                    (i / total_files) * 100,
+                    f"📹 Processing: {uploaded_file.name}",
+                    {"current_file": uploaded_file.name},
                 )
 
-                # Use memory-efficient streaming processing
-                use_optimized = st.checkbox(
-                    "💾 Memory-Efficient Mode",
-                    value=True,
-                    help="Use less memory (recommended for large files)",
-                )
-                use_gpu = st.checkbox(
-                    "🚀 Use GPU Acceleration",
-                    value=True,
-                    help="Enable GPU processing for faster results",
-                )
-
-                # Choose processing method
+                # Use captured settings (no UI elements in processing loop)
                 if use_optimized:
                     result = self.processor.process_video_streaming(
                         file_path,
@@ -413,54 +813,144 @@ class NestCamApp:
                     )
 
                 results.append(result)
-
-                # Clean up temp file
                 Path(file_path).unlink(missing_ok=True)
 
-            st.session_state.current_job["status"] = "completed"
-            st.session_state.current_job["results"] = results
-
-            # Add to processing history
-            st.session_state.processing_history.append(
-                {
-                    "timestamp": datetime.now(),
-                    "files_processed": len(files),
-                    "results": results,
-                }
-            )
+            # Save stats after completion
+            self._save_stats()
 
             st.success("✅ Processing completed!")
 
         except Exception as e:
             st.session_state.current_job["status"] = "error"
             st.session_state.current_job["error"] = str(e)
-            st.error(f"❌ Processing failed: {str(e)}")
             logger.error(f"Processing failed: {e}")
 
+            # Save error stats
+            self._save_stats()
+
+    def _save_processing_state(self, job_id, current_file_index, processed_files):
+        """Save current processing state for resume functionality"""
+        if not getattr(config.processing, "enable_resume", True):
+            return
+
+        state_dir = getattr(config.processing, "processing_state_dir", None)
+        if not state_dir:
+            return
+
+        state_file = Path(state_dir) / f"processing_state_{job_id}.json"
+
+        state_data = {
+            "job_id": job_id,
+            "current_file_index": current_file_index,
+            "processed_files": processed_files,
+            "settings": st.session_state.current_job.get("settings", {}),
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        try:
+            Path(state_dir).mkdir(parents=True, exist_ok=True)
+            with open(state_file, "w") as f:
+                json.dump(state_data, f, indent=2)
+            st.session_state.current_job["state_file"] = str(state_file)
+        except Exception as e:
+            logger.warning(f"Failed to save processing state: {e}")
+
+    def _load_processing_state(self, job_id):
+        """Load saved processing state"""
+        state_dir = getattr(config.processing, "processing_state_dir", None)
+        if not state_dir:
+            return None
+
+        state_file = Path(state_dir) / f"processing_state_{job_id}.json"
+
+        if state_file.exists():
+            try:
+                with open(state_file, "r") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning(f"Failed to load processing state: {e}")
+
+        return None
+
+    def _resume_processing(self, state_data):
+        """Resume processing from saved state"""
+        st.info(
+            f"🔄 Resuming from file {state_data['current_file_index'] + 1} of {len(st.session_state.uploaded_files)}"
+        )
+
+        # Restore settings
+        st.session_state.current_job = {
+            "status": "running",
+            "progress": 0.0,
+            "current_file": "",
+            "start_time": time.time(),
+            "logs": [],
+            "settings": state_data["settings"],
+            "resumed": True,
+            "resume_from": state_data["current_file_index"],
+        }
+
+        # Continue from where we left off
+        self._start_processing(
+            st.session_state.uploaded_files[state_data["current_file_index"] :],
+            state_data["settings"].get("output_format", "mp4"),
+            st.session_state.output_dir,
+            False,  # add_watermark - would need to save this
+            "",  # watermark_text - would need to save this
+            state_data["settings"].get("use_optimized", True),
+            state_data["settings"].get("use_gpu", True),
+        )
+
     def _render_processing_progress(self):
-        """Render processing progress with debug menu"""
+        """Enhanced processing progress with real-time updates"""
         job = st.session_state.current_job
 
-        st.subheader("Processing Progress")
-
         if job["status"] == "running":
-            st.progress(job["progress"])
-            st.info(f"📹 Processing: {job['current_file']}")
+            # Add a placeholder for forcing UI updates
+            if not hasattr(st.session_state, "debug_placeholder"):
+                st.session_state.debug_placeholder = st.empty()
 
-            elapsed = time.time() - job["start_time"]
-            st.text(f"⏱️ Elapsed: {elapsed:.1f}s")
+            # Update the placeholder to force refresh
+            st.session_state.debug_placeholder.text(f"Last update: {time.time()}")
 
-            # Debug Menu
-            with st.expander("🔍 Debug Information", expanded=False):
-                col1, col2 = st.columns(2)
+            # Safely get and validate progress value
+            progress_value = job.get("progress", 0.0)
 
-                with col1:
-                    st.subheader("📊 System Resources")
+            try:
+                if isinstance(progress_value, str):
+                    progress_value = 0.0
+                elif not isinstance(progress_value, (int, float)):
+                    progress_value = 0.0
 
-                    # Memory usage
+                # Ensure progress is in valid range
+                progress_value = max(0.0, min(1.0, float(progress_value)))
+
+                st.progress(progress_value)
+            except Exception as e:
+                # Fallback progress bar
+                st.progress(0.0)
+                logger.warning(f"Failed to display progress: {e}")
+
+            st.info(f"📹 Processing: {job.get('current_file', 'Unknown')}")
+
+            # Show elapsed time during processing (not just after)
+            try:
+                elapsed = time.time() - job.get("start_time", time.time())
+                st.text(f"⏱️ Elapsed: {elapsed:.1f}s")
+            except Exception as e:
+                st.text("⏱️ Elapsed: 0.0s")
+                logger.warning(f"Failed to calculate elapsed time: {e}")
+
+            # Debug Information - Always visible during processing
+            st.subheader("🔍 Debug Information")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.markdown("**📊 System Resources**")
+
+                if HAS_PSUTIL:
                     try:
-                        import psutil
-
                         memory = psutil.virtual_memory()
                         st.metric("RAM Usage", f"{memory.percent:.1f}%")
                         st.metric(
@@ -469,7 +959,79 @@ class NestCamApp:
                     except:
                         st.text("Memory monitoring unavailable")
 
-                    # GPU info if available
+                try:
+                    import torch
+
+                    if torch.cuda.is_available():
+                        gpu_memory = torch.cuda.get_device_properties(0).total_memory
+                        gpu_used = torch.cuda.memory_allocated(0)
+                        gpu_percent = (gpu_used / gpu_memory) * 100
+                        st.metric("GPU Memory", f"{gpu_percent:.1f}%")
+                    else:
+                        st.text("GPU not available")
+                except:
+                    st.text("GPU monitoring unavailable")
+
+            with col2:
+                st.markdown("**⚙️ Processing Details**")
+
+                st.text(f"Stage: {job.get('stage', 'Processing')}")
+
+                current_frame = job.get("current_frame", 0)
+                total_frames = job.get("total_frames", 0)
+                if total_frames > 0:
+                    st.metric("Frame Progress", f"{current_frame}/{total_frames}")
+
+                settings = job.get("settings", {})
+                st.text(f"Memory-Efficient: {settings.get('use_optimized', True)}")
+                st.text(f"GPU Acceleration: {settings.get('use_gpu', True)}")
+                st.text(f"Output Format: {settings.get('output_format', 'mp4')}")
+
+            # Real-time logs
+            st.markdown("**📝 Real-time Logs**")
+            logs = job.get("logs", [])
+            if logs:
+                # Show last 10 log entries
+                try:
+                    log_text = "\n".join([log.split(": ", 1)[1] for log in logs[-10:]])
+                    st.text_area(
+                        "Recent Logs",
+                        log_text,
+                        height=150,
+                        disabled=True,
+                        key="debug_logs",
+                    )
+                except:
+                    st.text_area(
+                        "Recent Logs",
+                        "Log parsing error",
+                        height=150,
+                        disabled=True,
+                        key="debug_logs_error",
+                    )
+            else:
+                st.text("No logs available yet")
+
+        elif job["status"] == "completed":
+            st.success("✅ Processing completed!")
+
+            # Debug information in expandable menu after completion
+            with st.expander("🔍 Processing Details & Logs", expanded=False):
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.markdown("**📊 Final System Resources**")
+
+                    if HAS_PSUTIL:
+                        try:
+                            memory = psutil.virtual_memory()
+                            st.metric("Final RAM Usage", f"{memory.percent:.1f}%")
+                            st.metric(
+                                "Available RAM", f"{memory.available / (1024**3):.1f}GB"
+                            )
+                        except:
+                            st.text("Memory monitoring unavailable")
+
                     try:
                         import torch
 
@@ -479,53 +1041,91 @@ class NestCamApp:
                             ).total_memory
                             gpu_used = torch.cuda.memory_allocated(0)
                             gpu_percent = (gpu_used / gpu_memory) * 100
-                            st.metric("GPU Memory", f"{gpu_percent:.1f}%")
+                            st.metric("Final GPU Memory", f"{gpu_percent:.1f}%")
                         else:
                             st.text("GPU not available")
                     except:
                         st.text("GPU monitoring unavailable")
 
                 with col2:
-                    st.subheader("⚙️ Processing Details")
+                    st.markdown("**⚙️ Processing Summary**")
 
-                    # Processing stage
-                    stage = job.get("stage", "Unknown")
-                    st.text(f"Stage: {stage}")
-
-                    # Frame progress
-                    current_frame = job.get("current_frame", 0)
                     total_frames = job.get("total_frames", 0)
                     if total_frames > 0:
-                        st.metric("Frame Progress", f"{current_frame}/{total_frames}")
+                        st.metric("Total Frames", total_frames)
 
-                    # Processing parameters
-                    st.text(f"Batch Size: {job.get('batch_size', 'N/A')}")
-                    st.text(f"Workers: {job.get('workers', 'N/A')}")
+                    settings = job.get("settings", {})
+                    st.text(f"Memory-Efficient: {settings.get('use_optimized', True)}")
+                    st.text(f"GPU Acceleration: {settings.get('use_gpu', True)}")
+                    st.text(f"Output Format: {settings.get('output_format', 'mp4')}")
 
-                    # Performance metrics
-                    fps = job.get("fps", 0)
-                    if fps > 0:
-                        st.metric("Processing FPS", f"{fps:.1f}")
-
-                    motion_events = job.get("motion_events", 0)
-                    st.metric("Motion Events Detected", motion_events)
-
-                # Real-time logs
-                st.subheader("📝 Real-time Logs")
+                # Processing logs
+                st.markdown("**📝 Processing Logs**")
                 logs = job.get("logs", [])
                 if logs:
-                    log_text = "\n".join(logs[-10:])  # Show last 10 log entries
-                    st.text_area("Recent Logs", log_text, height=150, disabled=True)
+                    try:
+                        log_text = "\n".join(
+                            [log.split(": ", 1)[1] for log in logs[-20:]]
+                        )
+                        st.text_area(
+                            "Complete Logs", log_text, height=200, disabled=True
+                        )
+                    except:
+                        st.text_area(
+                            "Complete Logs",
+                            "Log parsing error",
+                            height=200,
+                            disabled=True,
+                        )
                 else:
-                    st.text("No logs available yet")
+                    st.text("No logs available")
 
-        elif job["status"] == "completed":
-            st.success("✅ Processing completed!")
             if "results" in job:
                 self._display_results(job["results"])
 
         elif job["status"] == "error":
-            st.error(f"❌ Error: {job['error']}")
+            st.error(f"❌ Error: {job.get('error', 'Unknown error')}")
+
+            # Debug information in expandable menu for error cases
+            with st.expander("🔍 Error Details & Logs", expanded=False):
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.markdown("**📊 System State at Error**")
+
+                    if HAS_PSUTIL:
+                        try:
+                            memory = psutil.virtual_memory()
+                            st.metric("RAM Usage at Error", f"{memory.percent:.1f}%")
+                        except:
+                            st.text("Memory monitoring unavailable")
+
+                with col2:
+                    st.markdown("**⚙️ Error Context**")
+
+                    st.text(f"Stage: {job.get('stage', 'Unknown')}")
+                    settings = job.get("settings", {})
+                    st.text(f"Memory-Efficient: {settings.get('use_optimized', True)}")
+                    st.text(f"GPU Acceleration: {settings.get('use_gpu', True)}")
+
+                # Error logs
+                st.markdown("**📝 Error Logs**")
+                logs = job.get("logs", [])
+                if logs:
+                    try:
+                        log_text = "\n".join(
+                            [log.split(": ", 1)[1] for log in logs[-20:]]
+                        )
+                        st.text_area("Error Logs", log_text, height=200, disabled=True)
+                    except:
+                        st.text_area(
+                            "Error Logs",
+                            "Log parsing error",
+                            height=200,
+                            disabled=True,
+                        )
+                else:
+                    st.text("No logs available")
 
     def _display_results(self, results):
         """Display processing results"""
@@ -642,51 +1242,94 @@ class NestCamApp:
             st.dataframe(history_df)
 
     def _render_audio_tab(self):
-        """Render audio settings tab"""
+        """Render audio settings tab with toggle and save functionality"""
         st.header("Audio Settings")
 
-        st.subheader("Background Music")
-
-        # Default music
-        st.write("**Default Music:**")
-        default_music = st.file_uploader(
-            "Upload default background music",
-            type=["mp3", "wav", "ogg"],
-            key="default_music",
+        # Audio toggle
+        st.subheader("🎵 Audio Processing")
+        enable_audio = st.checkbox(
+            "Enable Audio Processing",
+            value=getattr(config.audio, "enable_audio", True),
+            help="Enable or disable audio processing (faster without audio)",
         )
-        if default_music:
-            config.audio.music_paths["default"] = self.file_service.save_music_file(
-                default_music
-            )
-            st.success("Default music uploaded!")
+        config.audio.__dict__["enable_audio"] = enable_audio
 
-        # Duration-specific music
-        durations = {"60s": 60, "12min": 720, "1h": 3600}
+        if config.audio.__dict__.get("enable_audio", True):
+            st.subheader("Background Music")
 
-        for label, seconds in durations.items():
-            st.write(f"**Music for {label} videos:**")
-            music_file = st.file_uploader(
-                f"Upload music for {label} videos",
+            # Default music
+            st.write("**Default Music:**")
+            default_music = st.file_uploader(
+                "Upload default background music",
                 type=["mp3", "wav", "ogg"],
-                key=f"music_{seconds}",
+                key="default_music",
             )
-            if music_file:
-                config.audio.music_paths[str(seconds)] = (
-                    self.file_service.save_music_file(music_file)
+            if default_music:
+                config.audio.music_paths["default"] = self.file_service.save_music_file(
+                    default_music
                 )
-                st.success(f"Music for {label} videos uploaded!")
+                config.audio.__dict__["selected_music"] = getattr(
+                    config.audio, "selected_music", {}
+                )
+                config.audio.__dict__["selected_music"]["default"] = (
+                    config.audio.music_paths["default"]
+                )
 
-        # Volume control
-        st.subheader("Volume Control")
-        config.audio.volume = st.slider(
-            "Music Volume",
-            min_value=0.0,
-            max_value=2.0,
-            value=config.audio.volume,
-            step=0.1,
-        )
+            # Duration-specific music
+            durations = {"60s": 60, "12min": 720, "1h": 3600}
 
-        if st.button("💾 Save Audio Settings"):
+            for label, seconds in durations.items():
+                st.write(f"**Music for {label} videos:**")
+                music_file = st.file_uploader(
+                    f"Upload music for {label} videos",
+                    type=["mp3", "wav", "ogg"],
+                    key=f"music_{seconds}",
+                )
+                if music_file:
+                    saved_path = self.file_service.save_music_file(music_file)
+                    config.audio.music_paths[str(seconds)] = saved_path
+                    config.audio.__dict__["selected_music"][str(seconds)] = (
+                        config.audio.music_paths[selected]
+                    )
+
+            # Volume control
+            st.subheader("Volume Control")
+            config.audio.volume = st.slider(
+                "Music Volume",
+                min_value=0.0,
+                max_value=2.0,
+                value=config.audio.volume,
+                step=0.1,
+            )
+
+            # Music selection for each duration
+            st.subheader("🎵 Music Selection")
+            for label, seconds in durations.items():
+                available_music = list(config.audio.music_paths.keys())
+                if available_music:
+                    selected = st.selectbox(
+                        f"Music for {label} videos",
+                        options=available_music,
+                        index=(
+                            available_music.index(
+                                config.audio.selected_music.get(str(seconds), "default")
+                            )
+                            if config.audio.selected_music.get(str(seconds))
+                            in available_music
+                            else 0
+                        ),
+                        key=f"select_music_{seconds}",
+                    )
+                    config.audio.selected_music[str(seconds)] = (
+                        config.audio.music_paths[selected]
+                    )
+        else:
+            st.info(
+                "⚡ **Audio processing disabled** - Videos will be processed without background music"
+            )
+
+        # Save settings button
+        if st.button("💾 Save Audio Settings", key="save_audio_settings"):
             config.save_to_file()
             st.success("Audio settings saved!")
 
@@ -752,7 +1395,22 @@ class NestCamApp:
                 upload_progress = st.progress(0)
 
                 def progress_callback(progress):
-                    upload_progress.progress(progress / 100)
+                    try:
+                        # Validate progress using the same logic
+                        if isinstance(progress, str):
+                            numeric_match = re.search(r"(\d+\.?\d*)", progress)
+                            if numeric_match:
+                                progress = float(numeric_match.group(1))
+                            else:
+                                progress = 0.0
+                        elif not isinstance(progress, (int, float)):
+                            progress = 0.0
+
+                        progress = max(0.0, min(100.0, float(progress)))
+                        upload_progress.progress(progress / 100)
+                    except Exception as e:
+                        upload_progress.progress(0.0)
+                        logger.warning(f"YouTube upload progress error: {e}")
 
                 video_url = self.youtube_service.upload_video(
                     file_path, title, description, progress_callback=progress_callback

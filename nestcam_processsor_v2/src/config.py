@@ -66,6 +66,33 @@ class ProcessingSettings(BaseModel):
         default=8.0, ge=1.0, le=64.0, description="Memory limit in GB"
     )
 
+    # Detailed Analysis Settings
+    use_detailed_analysis: bool = Field(
+        default=True, description="Enable detailed motion analysis (Pass 2)"
+    )
+    detail_level: str = Field(
+        default="normal",
+        pattern="^(light|normal|detailed)$",
+        description="Level of detail for motion analysis",
+    )
+    context_window_size: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Number of frames around detected motion to analyze",
+    )
+    analysis_methods: list = Field(
+        default=["white_threshold", "motion_diff"],
+        description="Which analysis methods to use",
+    )
+
+    processing_state_dir: Optional[Path] = Field(
+        default=None, description="Directory to save processing states for resume"
+    )
+    enable_resume: bool = Field(
+        default=True, description="Enable processing resume functionality"
+    )
+
     @field_validator("output_resolution")
     @classmethod
     def validate_resolution(cls, v):
@@ -82,6 +109,10 @@ class AudioSettings(BaseModel):
 
     volume: float = Field(default=1.0, ge=0.0, le=2.0)
     music_paths: Dict[str, Optional[str]] = Field(default_factory=dict)
+    enable_audio: bool = Field(default=True, description="Enable audio processing")
+    selected_music: Dict[str, Optional[str]] = Field(
+        default_factory=dict, description="Selected music for each duration"
+    )
 
 
 class UploadSettings(BaseModel):
