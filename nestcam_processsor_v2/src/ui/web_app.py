@@ -381,16 +381,36 @@ class NestCamApp:
                     (i / total_files) * 100, uploaded_file.name, total_files
                 )
 
-                # Process video
-                result = self.processor.process_video(
-                    file_path,
-                    output_format=output_format,
-                    output_dir=st.session_state.output_dir,
-                    watermark_text=watermark_text if add_watermark else None,
-                    progress_callback=lambda p, cf, tf: progress_callback(
-                        (i / total_files) * 100 + (p / total_files), cf, total_files
-                    ),
+                # Use memory-efficient streaming processing
+                use_optimized = st.checkbox(
+                    "💾 Memory-Efficient Mode",
+                    value=True,
+                    help="Use less memory (recommended for large files)",
                 )
+                use_gpu = st.checkbox(
+                    "🚀 Use GPU Acceleration",
+                    value=True,
+                    help="Enable GPU processing for faster results",
+                )
+
+                # Choose processing method
+                if use_optimized:
+                    result = self.processor.process_video_streaming(
+                        file_path,
+                        output_format,
+                        st.session_state.output_dir,
+                        watermark_text,
+                        progress_callback,
+                        use_gpu=use_gpu,
+                    )
+                else:
+                    result = self.processor.process_video(
+                        file_path,
+                        output_format,
+                        st.session_state.output_dir,
+                        watermark_text,
+                        progress_callback,
+                    )
 
                 results.append(result)
 
