@@ -58,17 +58,59 @@ except ImportError:
 
 import time
 
-# GPU Support (CUDA for 4070ti)
+# GPU Support (CUDA for NVIDIA, Metal for Mac)
+import platform
+
+IS_MAC = platform.system() == "Darwin"
+IS_WINDOWS = platform.system() == "Windows"
+
+# GPU Backend Detection
+GPU_BACKEND = "none"
+HAS_CUDA = False
+HAS_METAL = False
+HAS_CUPY = False
+
+try:
+    import torch
+
+    # Check for CUDA (NVIDIA)
+    if torch.cuda.is_available():
+        HAS_CUDA = True
+        GPU_BACKEND = "cuda"
+        print("✅ NVIDIA GPU detected (CUDA)")
+
+    # Check for Metal (Mac)
+    elif IS_MAC and torch.backends.mps.is_available():
+        HAS_METAL = True
+        GPU_BACKEND = "metal"
+        print("✅ Apple Silicon GPU detected (Metal)")
+
+    else:
+        GPU_BACKEND = "cpu"
+        print("⚠️ No GPU acceleration available, using CPU")
+
+except ImportError:
+    print("⚠️ PyTorch not available for GPU detection")
+
+# Legacy cupy support for OpenCV CUDA operations
 try:
     import cupy as cp
 
-    HAS_GPU = True
-    print("✅ GPU acceleration enabled (CUDA)")
+    HAS_CUPY = True
+    if not HAS_CUDA and not HAS_METAL:
+        GPU_BACKEND = "cuda-legacy"
+        print("✅ Legacy CUDA support available (cupy)")
 except ImportError:
-    HAS_GPU = False
-    print("⚠️ GPU acceleration not available (install cupy for CUDA support)")
+    print("⚠️ cupy not available for legacy CUDA support")
+
+# Set final GPU availability
+HAS_GPU = HAS_CUDA or HAS_METAL or HAS_CUPY
+
+print(f"🎯 GPU Backend: {GPU_BACKEND}")
+print(f"🚀 GPU Acceleration: {'Enabled' if HAS_GPU else 'Disabled'}")
 
 import re
+import random  # Add this import for the progress callback
 
 
 # Memory monitoring (optional)
@@ -543,8 +585,14 @@ class NestCamApp:
 
     def _render_main_content(self):
         """Render main content area"""
-        tab1, tab2, tab3, tab4 = st.tabs(
-            ["📹 Process Videos", "📊 Analytics", "🎵 Audio", "📤 Upload"]
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(
+            [
+                "📹 Process Videos",
+                "📊 Analytics",
+                "🎵 Audio",
+                "📤 Upload",
+                "💻 System Info",
+            ]
         )
 
         with tab1:
@@ -555,6 +603,8 @@ class NestCamApp:
             self._render_audio_tab()
         with tab4:
             self._render_upload_tab()
+        with tab5:
+            self._render_system_info_tab()
 
     def _render_video_processing_tab(self):
         """Render video processing tab"""
@@ -714,7 +764,7 @@ class NestCamApp:
         elapsed_text = st.empty()
 
         def progress_callback(progress, message, debug_info=None):
-            """Enhanced progress callback with debug support"""
+            """Optimized progress callback with minimal overhead"""
             try:
                 # Validate and convert progress
                 progress = self._validate_progress(progress)
@@ -736,14 +786,45 @@ class NestCamApp:
                     current_file = message.split("Processing:")[1].split("(")[0].strip()
                     st.session_state.current_job["current_file"] = current_file
 
-                # Add to logs
-                st.session_state.current_job["logs"].append(f"{time.time()}: {message}")
+                # Add to logs (limit log frequency to reduce overhead)
+                if random.random() < 0.1:  # Only log 10% of the time
+                    st.session_state.current_job["logs"].append(
+                        f"{time.time()}: {message}"
+                    )
 
             # Handle debug information
             if debug_info and isinstance(debug_info, dict):
                 st.session_state.current_job.update(debug_info)
 
-            # Update UI elements with error handling
+            # Schedule state save if needed (don't save here)
+            job = st.session_state.current_job
+            current_progress = job.get("progress", 0.0)
+            last_save_progress = job.get("last_save_progress", 0.0)
+            current_file = job.get("current_file", "")
+
+            # Ensure progress values are floats for comparison
+            try:
+                current_progress = (
+                    float(current_progress) if current_progress != "" else 0.0
+                )
+                last_save_progress = (
+                    float(last_save_progress) if last_save_progress != "" else 0.0
+                )
+            except (ValueError, TypeError):
+                current_progress = 0.0
+                last_save_progress = 0.0
+
+            # Only schedule save if conditions met (don't save here)
+            if (
+                current_progress >= last_save_progress + 0.1
+                or job.get("last_save_file", "") != current_file
+                or "last_save_progress" not in job
+            ):
+                job["needs_save"] = True
+                job["save_progress"] = current_progress
+                job["save_file"] = current_file
+
+            # Update UI elements with error handling (minimize updates)
             try:
                 # Ensure progress is always a valid float between 0.0 and 1.0
                 current_progress = st.session_state.current_job["progress"]
@@ -757,20 +838,10 @@ class NestCamApp:
                 progress_bar.progress(current_progress)
                 status_text.text(message)
 
-                # Show elapsed time during processing
-                elapsed = time.time() - st.session_state.current_job["start_time"]
-                elapsed_text.text(f"⏱️ Elapsed: {elapsed:.1f}s")
-
-                # Force UI refresh by updating a placeholder
-                # This ensures the debug information updates in real-time
-                if hasattr(st.session_state, "debug_placeholder"):
-                    st.session_state.debug_placeholder.empty()
-
-                # Also refresh the button state placeholder
-                if hasattr(st.session_state, "button_state_placeholder"):
-                    st.session_state.button_state_placeholder.text(
-                        f"⏳ Processing: {message}"
-                    )
+                # Show elapsed time during processing (less frequent)
+                if random.random() < 0.05:  # Only update 5% of the time
+                    elapsed = time.time() - st.session_state.current_job["start_time"]
+                    elapsed_text.text(f"⏱️ Elapsed: {elapsed:.1f}s")
 
             except Exception as e:
                 logger.warning(f"Failed to update progress UI: {e}")
@@ -779,6 +850,7 @@ class NestCamApp:
             # Process videos with captured settings
             results = []
             total_files = len(files)
+            save_counter = 0
 
             for i, uploaded_file in enumerate(files):
                 # Save uploaded file temporarily
@@ -792,6 +864,12 @@ class NestCamApp:
                     f"📹 Processing: {uploaded_file.name}",
                     {"current_file": uploaded_file.name},
                 )
+
+                # Check for state save every few files
+                save_counter += 1
+                if save_counter >= 3:  # Save every 3 files
+                    self._periodic_state_save()
+                    save_counter = 0
 
                 # Use captured settings (no UI elements in processing loop)
                 if use_optimized:
@@ -814,6 +892,9 @@ class NestCamApp:
 
                 results.append(result)
                 Path(file_path).unlink(missing_ok=True)
+
+            # Final state save
+            self._periodic_state_save()
 
             # Save stats after completion
             self._save_stats()
@@ -871,6 +952,56 @@ class NestCamApp:
                 logger.warning(f"Failed to load processing state: {e}")
 
         return None
+
+    def _periodic_state_save(self):
+        """Handle periodic state saving without interrupting processing"""
+        job = st.session_state.current_job
+
+        if job.get("needs_save", False):
+            try:
+                # Generate job ID from timestamp and settings
+                import hashlib
+
+                job_data = f"{job.get('start_time', 0)}_{job.get('settings', {})}"
+                job_id = hashlib.md5(job_data.encode()).hexdigest()[:8]
+
+                # Find current file index
+                current_file_index = 0
+                current_file = job.get("save_file", "")
+                if (
+                    hasattr(st.session_state, "uploaded_files")
+                    and st.session_state.uploaded_files
+                ):
+                    for i, file in enumerate(st.session_state.uploaded_files):
+                        if hasattr(file, "name") and file.name in current_file:
+                            current_file_index = i
+                            break
+
+                # Get processed files list
+                processed_files = []
+                if hasattr(st.session_state, "uploaded_files"):
+                    processed_files = [
+                        f.name
+                        for f in st.session_state.uploaded_files[:current_file_index]
+                    ]
+
+                # Save processing state
+                self._save_processing_state(job_id, current_file_index, processed_files)
+
+                # Update last save info
+                job["last_save_progress"] = job.get("save_progress", 0.0)
+                job["last_save_file"] = current_file
+                job["needs_save"] = False
+
+                # Add to logs (only add save message, not all processing messages)
+                if len(st.session_state.current_job["logs"]) < 100:  # Limit log size
+                    st.session_state.current_job["logs"].append(
+                        f"{time.time()}: 💾 Processing state saved"
+                    )
+
+            except Exception as e:
+                logger.warning(f"Failed to save processing state: {e}")
+                job["needs_save"] = False  # Reset flag on error
 
     def _resume_processing(self, state_data):
         """Resume processing from saved state"""
@@ -959,18 +1090,43 @@ class NestCamApp:
                     except:
                         st.text("Memory monitoring unavailable")
 
-                try:
-                    import torch
+                # Enhanced GPU information
+                st.markdown(f"**🎯 GPU Backend: {GPU_BACKEND.upper()}**")
 
-                    if torch.cuda.is_available():
+                if GPU_BACKEND == "cuda":
+                    try:
+                        import torch
+
                         gpu_memory = torch.cuda.get_device_properties(0).total_memory
                         gpu_used = torch.cuda.memory_allocated(0)
                         gpu_percent = (gpu_used / gpu_memory) * 100
                         st.metric("GPU Memory", f"{gpu_percent:.1f}%")
-                    else:
-                        st.text("GPU not available")
-                except:
-                    st.text("GPU monitoring unavailable")
+                        st.metric("GPU Device", torch.cuda.get_device_name(0))
+                    except:
+                        st.text("CUDA monitoring unavailable")
+
+                elif GPU_BACKEND == "metal":
+                    try:
+                        import torch
+
+                        st.metric("GPU Backend", "Apple Metal")
+                        st.metric("GPU Device", "Apple Silicon")
+                    except:
+                        st.text("Metal monitoring unavailable")
+
+                elif GPU_BACKEND == "cuda-legacy":
+                    st.metric("GPU Backend", "Legacy CUDA")
+                    try:
+                        import cv2
+
+                        if cv2.cuda.getCudaEnabledDeviceCount() > 0:
+                            st.metric(
+                                "CUDA Devices", cv2.cuda.getCudaEnabledDeviceCount()
+                            )
+                    except:
+                        st.text("CUDA monitoring unavailable")
+                else:
+                    st.text("GPU: Not available")
 
             with col2:
                 st.markdown("**⚙️ Processing Details**")
@@ -987,30 +1143,64 @@ class NestCamApp:
                 st.text(f"GPU Acceleration: {settings.get('use_gpu', True)}")
                 st.text(f"Output Format: {settings.get('output_format', 'mp4')}")
 
-            # Real-time logs
-            st.markdown("**📝 Real-time Logs**")
-            logs = job.get("logs", [])
-            if logs:
-                # Show last 10 log entries
-                try:
-                    log_text = "\n".join([log.split(": ", 1)[1] for log in logs[-10:]])
-                    st.text_area(
-                        "Recent Logs",
-                        log_text,
-                        height=150,
-                        disabled=True,
-                        key="debug_logs",
+                # Real-time logs
+                st.markdown("**📝 Real-time Logs**")
+                logs = job.get("logs", [])
+                if logs:
+                    # Show last 10 log entries
+                    try:
+                        log_text = "\n".join(
+                            [log.split(": ", 1)[1] for log in logs[-10:]]
+                        )
+                        st.text_area(
+                            "Recent Logs",
+                            log_text,
+                            height=150,
+                            disabled=True,
+                            key="debug_logs",
+                        )
+                    except:
+                        st.text_area(
+                            "Recent Logs",
+                            "Log parsing error",
+                            height=150,
+                            disabled=True,
+                            key="debug_logs_error",
+                        )
+                else:
+                    st.text("No logs available yet")
+
+                # Save State Explanation
+                st.markdown("**💾 Processing State**")
+
+                save_info = []
+                if "state_file" in job:
+                    save_info.append(f"📄 State file: {Path(job['state_file']).name}")
+                if "last_save_progress" in job:
+                    save_info.append(
+                        f"📊 Last save: {job['last_save_progress']*100:.1f}%"
                     )
-                except:
-                    st.text_area(
-                        "Recent Logs",
-                        "Log parsing error",
-                        height=150,
-                        disabled=True,
-                        key="debug_logs_error",
-                    )
-            else:
-                st.text("No logs available yet")
+                if "last_save_file" in job:
+                    save_info.append(f"📹 Last file: {job['last_save_file']}")
+
+                if save_info:
+                    for info in save_info:
+                        st.text(info)
+                else:
+                    st.text("No state saves yet")
+
+                # Show save directory status
+                state_dir = getattr(config.processing, "processing_state_dir", None)
+                if state_dir:
+                    state_path = Path(state_dir)
+                    if state_path.exists():
+                        state_files = list(state_path.glob("processing_state_*.json"))
+                        st.text(f"📂 State directory: {state_dir}")
+                        st.text(f"📄 Saved states: {len(state_files)}")
+                    else:
+                        st.text("📂 State directory not created yet")
+                else:
+                    st.text("⚠️ State directory not configured")
 
         elif job["status"] == "completed":
             st.success("✅ Processing completed!")
@@ -1422,6 +1612,307 @@ class NestCamApp:
         except Exception as e:
             st.error(f"❌ Upload failed: {str(e)}")
             logger.error(f"YouTube upload failed: {e}")
+
+    def _render_system_info_tab(self):
+        """Render comprehensive system information and processing guide"""
+        st.header("💻 System Information & Processing Guide")
+
+        # System Overview
+        st.subheader("🖥️ System Overview")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("**🧠 Processor & Memory**")
+
+            if HAS_PSUTIL:
+                try:
+                    import psutil
+
+                    memory = psutil.virtual_memory()
+                    st.metric("RAM Usage", f"{memory.percent:.1f}%")
+                    st.metric("Available RAM", f"{memory.available / (1024**3):.1f}GB")
+                    st.metric("Total RAM", f"{memory.total / (1024**3):.1f}GB")
+                except:
+                    st.text("Memory monitoring unavailable")
+
+            # CPU Info
+            try:
+                import multiprocessing
+
+                st.metric("CPU Cores", multiprocessing.cpu_count())
+            except:
+                st.text("CPU info unavailable")
+
+        with col2:
+            st.markdown("**🎯 GPU Acceleration**")
+            st.metric("GPU Backend", GPU_BACKEND.upper())
+
+            if GPU_BACKEND == "cuda":
+                try:
+                    import torch
+
+                    st.metric("GPU Device", torch.cuda.get_device_name(0))
+                    gpu_memory = torch.cuda.get_device_properties(0).total_memory
+                    st.metric("GPU Memory", f"{gpu_memory / (1024**3):.1f}GB")
+                except:
+                    st.text("CUDA details unavailable")
+
+            elif GPU_BACKEND == "metal":
+                st.metric("GPU Device", "Apple Silicon")
+                st.metric("Backend", "Metal Performance Shaders")
+
+            elif GPU_BACKEND == "cuda-legacy":
+                st.metric("GPU Device", "NVIDIA (Legacy)")
+                st.metric("Backend", "OpenCV CUDA + CuPy")
+
+            else:
+                st.metric("GPU Status", "Not Available")
+                st.metric("Backend", "CPU Only")
+
+        # Processing Pipeline Explanation
+        st.divider()
+        st.subheader("🔄 Processing Pipeline Explanation")
+
+        st.markdown(
+            """
+        ### 📊 Motion Detection Process
+
+        **🎯 Fast Scan (Pass 1):**
+        - **Purpose**: Quick identification of potential motion areas
+        - **Method**: Processes every 4th-5th frame using simple algorithms
+        - **Resource Usage**: Low memory, high speed
+        - **GPU Usage**: Optional, basic frame processing
+        - **Typical Speed**: 1000+ FPS on modern hardware
+
+        **🔍 Detailed Analysis (Pass 2):**
+        - **Purpose**: Comprehensive analysis of detected motion areas
+        - **Method**: Multiple algorithms (white threshold, edge detection, etc.)
+        - **Resource Usage**: Higher memory, slower processing
+        - **GPU Usage**: Heavy usage for complex operations
+        - **Typical Speed**: 100-500 FPS depending on detail level
+
+        ### 🎬 Video Processing Stages
+
+        **1. File Upload & Validation**
+        - **Resource**: CPU, minimal memory
+        - **GPU**: Not used
+        - **Tip**: Large files may take time to upload
+
+        **2. Motion Detection**
+        - **Resource**: CPU + GPU (if enabled)
+        - **Memory**: Moderate (loads video frames)
+        - **Tip**: Fast scan is quick, detailed analysis is thorough
+
+        **3. Video Enhancement**
+        - **Resource**: GPU preferred, CPU fallback
+        - **Memory**: High during processing
+        - **Tip**: GPU acceleration dramatically improves speed
+
+        **4. Audio Processing (Optional)**
+        - **Resource**: CPU only
+        - **Memory**: Low
+        - **Tip**: Skip if not needed for faster processing
+
+        **5. Output Generation**
+        - **Resource**: CPU + GPU
+        - **Memory**: High during encoding
+        - **Tip**: Output format affects processing time
+        """
+        )
+
+        # Save State Explanation
+        st.divider()
+        st.subheader("💾 Processing State & Resume Functionality")
+
+        st.markdown(
+            """
+        ### 🔄 How Save State Works
+
+        **Automatic Saving:**
+        - Processing state is saved every few minutes during processing
+        - Location: `processing_states/` directory in your project folder
+        - Format: JSON files with session ID and progress information
+
+        **What Gets Saved:**
+        - Current file being processed
+        - Progress through the file list
+        - Processing settings and configuration
+        - Timestamp and session information
+
+        **Resume Process:**
+        1. **Detection**: App automatically detects interrupted sessions
+        2. **Validation**: Checks if saved state is valid and complete
+        3. **Resume**: Continues from where processing was interrupted
+        4. **Cleanup**: Removes old state files after successful completion
+
+        ### 📁 State File Location
+
+        Default location: `processing_states/processing_state_[session_id].json`
+        """
+        )
+
+        # Show current state directory
+        state_dir = getattr(config.processing, "processing_state_dir", None)
+        if state_dir:
+            st.info(f"📂 Current state directory: {state_dir}")
+            if Path(state_dir).exists():
+                state_files = list(Path(state_dir).glob("processing_state_*.json"))
+                if state_files:
+                    st.success(f"📄 Found {len(state_files)} saved state(s)")
+
+                    # Add delete all button
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.write("**Manage Saved States:**")
+                    with col2:
+                        if st.button("🗑️ Delete All States", type="secondary"):
+                            try:
+                                for state_file in state_files:
+                                    state_file.unlink()
+                                st.success("✅ All saved states deleted!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Failed to delete states: {e}")
+
+                    # Individual state files with delete buttons
+                    for state_file in sorted(
+                        state_files, key=lambda x: x.stat().st_mtime, reverse=True
+                    ):
+                        try:
+                            with open(state_file, "r") as f:
+                                state_data = json.load(f)
+
+                            timestamp = datetime.fromisoformat(state_data["timestamp"])
+                            time_ago = datetime.now() - timestamp
+
+                            col1, col2, col3 = st.columns([4, 1, 1])
+
+                            with col1:
+                                st.write(f"📋 {state_file.name}")
+                                st.caption(
+                                    f"Created {time_ago.days}d {time_ago.seconds//3600}h ago"
+                                )
+                                st.caption(
+                                    f"Progress: File {state_data.get('current_file_index', 0) + 1}"
+                                )
+
+                            with col2:
+                                if st.button(
+                                    "🔄 Resume", key=f"resume_{state_file.name}"
+                                ):
+                                    self._resume_processing(state_data)
+                                    st.rerun()
+
+                            with col3:
+                                if st.button(
+                                    "🗑️ Delete", key=f"delete_{state_file.name}"
+                                ):
+                                    try:
+                                        state_file.unlink()
+                                        st.success(f"✅ Deleted {state_file.name}")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"❌ Failed to delete: {e}")
+
+                        except Exception as e:
+                            # Fallback for corrupted state files
+                            col1, col2 = st.columns([4, 1])
+                            with col1:
+                                st.write(f"📋 {state_file.name}")
+                                st.caption("⚠️ Corrupted state file")
+                            with col2:
+                                if st.button(
+                                    "🗑️ Delete",
+                                    key=f"delete_corrupted_{state_file.name}",
+                                ):
+                                    try:
+                                        state_file.unlink()
+                                        st.success(f"✅ Deleted corrupted file")
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"❌ Failed to delete: {e}")
+        else:
+            st.info("📂 State directory is empty")
+
+        # Performance Tips
+        st.divider()
+        st.subheader("🚀 Performance Optimization Tips")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("**🎯 General Tips**")
+            tips = [
+                "✅ Use GPU acceleration for 2-5x speed improvement",
+                "✅ Enable memory-efficient mode for large files",
+                "✅ Disable detailed analysis for faster processing",
+                "✅ Choose appropriate context window size",
+                "✅ Use appropriate motion threshold values",
+            ]
+            for tip in tips:
+                st.write(tip)
+
+        with col2:
+            st.markdown("**⚡ Platform-Specific Tips**")
+
+            if IS_MAC:
+                tips = [
+                    "🍎 Metal GPU acceleration available",
+                    "🍎 Use PyTorch nightly for best Metal support",
+                    "🍎 Consider reducing context window on older Macs",
+                    "🍎 Monitor Activity Monitor for resource usage",
+                ]
+            elif IS_WINDOWS:
+                tips = [
+                    "🖥️ NVIDIA CUDA acceleration recommended",
+                    "🖥️ Install PyTorch with CUDA support",
+                    "🖥️ Monitor GPU usage in Task Manager",
+                    "🖥️ Consider reducing batch sizes if GPU memory limited",
+                ]
+            else:
+                tips = [
+                    "🐧 CPU processing is primary option",
+                    "🐧 Consider GPU acceleration if available",
+                    "🐧 Monitor system resources during processing",
+                    "🐧 Adjust worker processes based on CPU cores",
+                ]
+
+            for tip in tips:
+                st.write(tip)
+
+        # Current Configuration
+        st.divider()
+        st.subheader("⚙️ Current Configuration Summary")
+
+        st.markdown("**Motion Detection Settings:**")
+        st.write(
+            f"- Use Detailed Analysis: {getattr(config.processing, 'use_detailed_analysis', True)}"
+        )
+        st.write(
+            f"- Detail Level: {getattr(config.processing, 'detail_level', 'normal')}"
+        )
+        st.write(
+            f"- Context Window: {getattr(config.processing, 'context_window_size', 3)} frames"
+        )
+        st.write(
+            f"- Motion Threshold: {getattr(config.processing, 'motion_threshold', 3000)}"
+        )
+
+        st.markdown("**Performance Settings:**")
+        st.write(f"- GPU Backend: {GPU_BACKEND.upper()}")
+        st.write(f"- Memory-Efficient Mode: Default enabled")
+        st.write(
+            f"- Resume Functionality: {getattr(config.processing, 'enable_resume', True)}"
+        )
+
+        st.markdown("**Audio Settings:**")
+        st.write(f"- Audio Processing: {getattr(config.audio, 'enable_audio', True)}")
+        st.write(f"- Volume: {getattr(config.audio, 'volume', 1.0)}")
+
+        # Refresh button
+        if st.button("🔄 Refresh System Info"):
+            st.rerun()
 
 
 def main():

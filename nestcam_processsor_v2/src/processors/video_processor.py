@@ -54,6 +54,12 @@ class VideoProcessor:
         self.enhancer = VideoEnhancer(config)
         self.file_service = FileService(config)
 
+        # GPU setup
+        self.gpu_backend = self._detect_gpu_backend()
+        self.device = None
+        if self.gpu_backend != "cpu":
+            self._setup_gpu()
+
         # Processing parameters
         self.batch_size = config.processing.batch_size
         self.max_workers = config.processing.worker_processes
@@ -656,3 +662,127 @@ class VideoProcessor:
 
         self.logger.info(f"Video streaming generated successfully: {output_path}")
         return str(output_path)
+
+    def _detect_gpu_backend(self):
+        """Detect available GPU backend"""
+        import platform
+
+        IS_MAC = platform.system() == "Darwin"
+
+        try:
+            import torch
+
+            # Check for CUDA (NVIDIA)
+            if torch.cuda.is_available():
+                return "cuda"
+
+            # Check for Metal (Mac)
+            elif IS_MAC and torch.backends.mps.is_available():
+                return "metal"
+
+        except ImportError:
+            pass
+
+        # Check for legacy CUDA
+        try:
+            import cupy as cp
+
+            return "cuda-legacy"
+        except ImportError:
+            pass
+
+        return "cpu"
+
+    def _setup_gpu(self):
+        """Setup GPU acceleration"""
+        try:
+            if self.gpu_backend == "cuda":
+                import torch
+
+                self.device = torch.device("cuda")
+                torch.cuda.set_device(0)
+                print(f"🎯 CUDA GPU: {torch.cuda.get_device_name(0)}")
+
+            elif self.gpu_backend == "metal":
+                import torch
+
+                self.device = torch.device("mps")
+                print("🎯 Metal GPU enabled")
+
+            elif self.gpu_backend == "cuda-legacy":
+                import cv2
+
+                if cv2.cuda.getCudaEnabledDeviceCount() > 0:
+                    cv2.cuda.setDevice(0)
+                    print("🎯 Legacy CUDA enabled")
+
+        except Exception as e:
+            print(f"❌ GPU setup failed: {e}")
+            self.gpu_backend = "cpu"
+
+    def _process_frame_gpu(self, frame):
+        """GPU-accelerated frame processing with multiple backends"""
+        try:
+            if self.gpu_backend == "cuda" and self.device:
+                return self._process_frame_torch_cuda(frame)
+            elif self.gpu_backend == "metal" and self.device:
+                return self._process_frame_torch_metal(frame)
+            elif self.gpu_backend == "cuda-legacy":
+                return self._process_frame_opencv_cuda(frame)
+            else:
+                return self._process_frame_cpu(frame)
+        except Exception as e:
+            print(f"⚠️ GPU processing failed, falling back to CPU: {e}")
+            return self._process_frame_cpu(frame)
+
+    def _process_frame_torch_cuda(self, frame):
+        """Process frame using PyTorch CUDA"""
+        import torch
+        import torchvision.transforms as transforms
+
+        # Convert to tensor and move to GPU
+        transform = transforms.ToTensor()
+        tensor = transform(frame).unsqueeze(0).to(self.device)
+
+        # Apply GPU-based enhancement
+        # Example: brightness/contrast adjustment
+        enhanced_tensor = torch.clamp(tensor * 1.1, 0, 1)
+
+        # Convert back to numpy
+        enhanced = enhanced_tensor.squeeze(0).cpu().numpy()
+        enhanced = (enhanced * 255).astype(np.uint8).transpose(1, 2, 0)
+
+        return enhanced
+
+    def _process_frame_torch_metal(self, frame):
+        """Process frame using PyTorch Metal (Mac)"""
+        import torch
+        import torchvision.transforms as transforms
+
+        # Convert to tensor and move to Metal GPU
+        transform = transforms.ToTensor()
+        tensor = transform(frame).unsqueeze(0).to(self.device)
+
+        # Apply Metal-based enhancement
+        enhanced_tensor = torch.clamp(tensor * 1.1, 0, 1)
+
+        # Convert back to numpy
+        enhanced = enhanced_tensor.squeeze(0).cpu().numpy()
+        enhanced = (enhanced * 255).astype(np.uint8).transpose(1, 2, 0)
+
+        return enhanced
+
+    def _process_frame_opencv_cuda(self, frame):
+        """Process frame using OpenCV CUDA (legacy)"""
+        import cv2
+
+        # Upload to GPU
+        gpu_frame = cv2.cuda_GpuMat()
+        gpu_frame.upload(frame)
+
+        # Apply GPU operations
+        gpu_frame = cv2.cuda.bilateralFilter(gpu_frame, 9, 75, 75)
+        gpu_frame = cv2.cuda.GaussianBlur(gpu_frame, (5, 5), 0)
+
+        # Download from GPU
+        return gpu_frame.download()

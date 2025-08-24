@@ -257,6 +257,99 @@ class MotionDetector:
                     },
                 )
 
+        # Check if detailed analysis is disabled BEFORE starting detailed processing
+        if not use_detailed:
+            if progress_callback:
+                progress_callback(
+                    95,
+                    f"⚡ Fast scan complete: {len(potential_motion_frames)} motion areas detected",
+                    {
+                        "stage": "Complete",
+                        "motion_events": len(potential_motion_frames),
+                        "processing_reduction": f"{(1 - len(potential_motion_frames)/total_frames)*100:.1f}%",
+                    },
+                )
+
+            # Return fast scan results immediately
+            result = MotionResult(
+                frame_indices=potential_motion_frames,
+                motion_scores=[500.0] * len(potential_motion_frames),
+                avg_motion=500.0,
+                peak_motion=500.0,
+                motion_variance=0.0,
+                total_frames=total_frames,
+                processed_frames=len(potential_motion_frames),
+            )
+            return result
+
+        # Add safety limits for detailed analysis
+        MAX_MOTION_FRAMES = 1000  # Maximum motion frames to analyze in detail
+        MIN_FRAME_SPACING = (
+            30  # Minimum spacing between motion frames (30 = 1 second at 30fps)
+        )
+
+        # After collecting potential_motion_frames, add filtering:
+        potential_motion_frames = sorted(potential_motion_frames)
+
+        # Add debug logging about raw motion detection results
+        if progress_callback:
+            progress_callback(
+                30,
+                f"📊 Fast scan results: {len(potential_motion_frames)} raw motion areas detected from {total_frames} total frames",
+                {
+                    "stage": "Pass 1 - Analysis",
+                    "raw_motion_frames": len(potential_motion_frames),
+                    "total_frames": total_frames,
+                    "detection_rate": f"{len(potential_motion_frames)/total_frames*100:.2f}%",
+                },
+            )
+
+        # Filter out closely-spaced motion frames to reduce detailed analysis workload
+        if len(potential_motion_frames) > MAX_MOTION_FRAMES:
+            filtered_motion_frames = []
+            last_frame = -MIN_FRAME_SPACING
+
+            for frame in potential_motion_frames:
+                if frame >= last_frame + MIN_FRAME_SPACING:
+                    filtered_motion_frames.append(frame)
+                    last_frame = frame
+
+            if progress_callback:
+                progress_callback(
+                    35,
+                    f"🔧 Motion frame filtering: {len(potential_motion_frames)} → {len(filtered_motion_frames)} frames (removed close duplicates)",
+                    {
+                        "stage": "Pass 1 - Filtering",
+                        "original_count": len(potential_motion_frames),
+                        "filtered_count": len(filtered_motion_frames),
+                        "reduction": f"{(1 - len(filtered_motion_frames)/len(potential_motion_frames))*100:.1f}%",
+                        "min_spacing": MIN_FRAME_SPACING,
+                    },
+                )
+
+            potential_motion_frames = filtered_motion_frames
+
+        # Apply maximum limit
+        if len(potential_motion_frames) > MAX_MOTION_FRAMES:
+            # Take evenly distributed sample
+            step = len(potential_motion_frames) // MAX_MOTION_FRAMES
+            potential_motion_frames = potential_motion_frames[::step][
+                :MAX_MOTION_FRAMES
+            ]
+
+            if progress_callback:
+                progress_callback(
+                    38,
+                    f"🎯 Motion frame sampling: Limited to {MAX_MOTION_FRAMES} frames for detailed analysis",
+                    {
+                        "stage": "Pass 1 - Sampling",
+                        "final_count": len(potential_motion_frames),
+                        "max_limit": MAX_MOTION_FRAMES,
+                    },
+                )
+
+        # Now proceed with detailed analysis using the filtered motion frames
+
         # ===== PASS 2: Detailed Analysis =====
         if progress_callback:
             progress_callback(
@@ -265,12 +358,48 @@ class MotionDetector:
                 {"stage": "Pass 2 - Detailed Analysis"},
             )
 
-        # Expand motion frames with context windows
+        # Expand motion frames with context windows (improved)
         detailed_frames = set()
-        for motion_frame in potential_motion_frames:
-            start_frame = max(0, motion_frame - second_pass_window)
-            end_frame = min(total_frames, motion_frame + second_pass_window + 1)
-            detailed_frames.update(range(start_frame, end_frame))
+        total_context_frames = 0
+
+        for i, motion_frame in enumerate(potential_motion_frames):
+            # Adaptive context window based on nearby motion density
+            if i > 0 and i < len(potential_motion_frames) - 1:
+                # Calculate distance to previous and next motion frames
+                prev_distance = motion_frame - potential_motion_frames[i - 1]
+                next_distance = potential_motion_frames[i + 1] - motion_frame
+
+                # Use smaller context window if motion frames are close together
+                adaptive_window = min(
+                    second_pass_window, max(1, min(prev_distance, next_distance) // 3)
+                )
+            else:
+                # Use full context window for first/last frames
+                adaptive_window = second_pass_window
+
+            start_frame = max(0, motion_frame - adaptive_window)
+            end_frame = min(total_frames, motion_frame + adaptive_window + 1)
+
+            frame_range = range(start_frame, end_frame)
+            detailed_frames.update(frame_range)
+            total_context_frames += len(frame_range)
+
+        # Add comprehensive logging
+        if progress_callback:
+            avg_density = total_context_frames / max(1, len(potential_motion_frames))
+            progress_callback(
+                42,
+                f"📊 Context window calculation: {len(potential_motion_frames)} motion areas → {len(detailed_frames)} unique frames to analyze",
+                {
+                    "stage": "Pass 2 - Setup",
+                    "motion_frames": len(potential_motion_frames),
+                    "detailed_frames": len(detailed_frames),
+                    "total_frames": total_frames,
+                    "avg_context_size": f"{avg_density:.1f}",
+                    "reduction_ratio": f"{(1 - len(detailed_frames)/total_frames)*100:.1f}%",
+                    "memory_estimate_mb": f"{len(detailed_frames) * 0.5:.1f}",  # Rough estimate
+                },
+            )
 
         # Sort and remove duplicates (set already handles this)
         detailed_frames = sorted(list(detailed_frames))
@@ -299,18 +428,17 @@ class MotionDetector:
 
             processed_count += 1
 
-            if progress_callback and processed_count % 50 == 0:  # Changed from 20 to 50
-                progress = (
-                    45 + (processed_count / len(detailed_frames)) * 50
-                )  # 50% more
+            if progress_callback and processed_count % 25 == 0:  # More frequent updates
+                progress = 45 + (processed_count / len(detailed_frames)) * 50
                 progress_callback(
                     progress,
-                    f"🎨 Detailed analysis: {len(final_motion_frames)} motion events ({processed_count}/{len(detailed_frames)} frames)",
+                    f"🎨 Detailed analysis: {len(final_motion_frames)}/{len(potential_motion_frames)} motion events | Frame {processed_count}/{len(detailed_frames)} ({processed_count/len(detailed_frames)*100:.1f}%)",
                     {
                         "stage": "Pass 2 - Detailed Analysis",
                         "processed": processed_count,
                         "total_detailed": len(detailed_frames),
                         "motion_events": len(final_motion_frames),
+                        "original_motion_areas": len(potential_motion_frames),
                         "white_threshold": self.config.processing.white_threshold,
                         "black_threshold": self.config.processing.black_threshold,
                     },
@@ -318,7 +446,7 @@ class MotionDetector:
 
         cap.release()
 
-        # Calculate final statistics
+        # Calculate final statistics and return results
         if final_motion_scores:
             avg_motion = np.mean(final_motion_scores)
             peak_motion = np.max(final_motion_scores)
@@ -339,49 +467,13 @@ class MotionDetector:
         if progress_callback:
             progress_callback(
                 95,
-                f"⚡ Using fast scan results: {len(potential_motion_frames)} motion areas detected",
+                f"✅ Detailed analysis complete: {len(final_motion_frames)} motion events",
                 {
                     "stage": "Complete",
-                    "motion_events": len(potential_motion_frames),
-                    "processing_reduction": f"{(1 - len(potential_motion_frames)/total_frames)*100:.1f}%",
+                    "motion_events": len(final_motion_frames),
+                    "processing_reduction": f"{(1 - len(detailed_frames)/total_frames)*100:.1f}%",
                 },
             )
-
-        # Skip detailed analysis if disabled
-        if not use_detailed:
-            if progress_callback:
-                progress_callback(
-                    95,
-                    f"⚡ Fast scan complete: {len(potential_motion_frames)} motion areas detected",
-                    {
-                        "stage": "Complete",
-                        "motion_events": len(potential_motion_frames),
-                        "processing_reduction": f"{(1 - len(potential_motion_frames)/total_frames)*100:.1f}%",
-                    },
-                )
-
-            # Return fast scan results
-            result = MotionResult(
-                frame_indices=potential_motion_frames,
-                motion_scores=[500.0] * len(potential_motion_frames),
-                avg_motion=500.0,
-                peak_motion=500.0,
-                motion_variance=0.0,
-                total_frames=total_frames,
-                processed_frames=len(potential_motion_frames),
-            )
-            return result
-
-        # Return results from detailed analysis
-        result = MotionResult(
-            frame_indices=final_motion_frames,
-            motion_scores=final_motion_scores,
-            avg_motion=avg_motion,
-            peak_motion=peak_motion,
-            motion_variance=motion_variance,
-            total_frames=total_frames,
-            processed_frames=len(final_motion_scores),
-        )
 
         self.logger.info(
             f"Optimized motion detection completed: {len(final_motion_frames)} frames with motion "
