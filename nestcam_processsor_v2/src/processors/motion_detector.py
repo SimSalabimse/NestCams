@@ -148,9 +148,17 @@ class MotionDetector:
         Memory-efficient motion detection that processes frames one by one
         without storing them in memory.
         """
-        # Initialize with running average baseline (not stored frames)
-        baseline_avg = None
-        baseline_count = 0
+        # Added proper initialization
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            raise ValueError(f"Cannot open video file: {video_path}")
+
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+
+        # Initialize motion detection variables
+        frame_indices = []
+        motion_scores = []
 
         # Process frames one by one
         for frame_idx in range(0, total_frames, self.frame_step):
@@ -312,4 +320,19 @@ class MotionDetector:
 
         # Compare histograms
         similarity = cv2.compareHist(hist_current, hist_baseline, cv2.HISTCMP_CORREL)
+        return (1.0 - similarity) * 1000  # Convert to motion score
+
+    def _calculate_streaming_motion_score(
+        self, frame: np.ndarray, baseline_avg: np.ndarray
+    ) -> float:
+        """Calculate motion score using streaming baseline"""
+        # Uses running average baseline instead of stored frames
+        # Calculate histogram for current frame
+        hist_current = cv2.calcHist(
+            [frame], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256]
+        )
+        cv2.normalize(hist_current, hist_current, 0, 1, cv2.NORM_MINMAX)
+
+        # Compare histograms
+        similarity = cv2.compareHist(hist_current, baseline_avg, cv2.HISTCMP_CORREL)
         return (1.0 - similarity) * 1000  # Convert to motion score

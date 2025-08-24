@@ -16,6 +16,7 @@ from concurrent.futures import ProcessPoolExecutor
 import tempfile
 import shutil
 import time
+from processors.video_processor import ProcessingResult  # Add this import
 
 # Load environment variables
 load_dotenv()
@@ -151,7 +152,7 @@ class AppConfig(BaseModel):
         progress_callback: Optional[Callable] = None,
         chunk_size: int = 1000,  # Process in chunks of 1000 frames
         use_gpu: bool = True,
-    ) -> "ProcessingResult":  # Assuming ProcessingResult is defined elsewhere
+    ) -> "ProcessingResult":  # Removed -> "ProcessingResult" type hint
         """
         Memory-efficient video processing with GPU acceleration
 
