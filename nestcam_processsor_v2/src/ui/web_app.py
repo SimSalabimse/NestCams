@@ -551,8 +551,25 @@ class NestCamApp:
 
         # Recent processing history
         st.subheader("Recent Processing History")
-        history_df = pd.DataFrame(st.session_state.processing_history)
-        if not history_df.empty:
+        # Convert ProcessingResult objects to dictionaries
+        history_data = []
+        for item in st.session_state.processing_history:
+            if hasattr(item, "results") and item.results:
+                for result in item.results:
+                    history_data.append(
+                        {
+                            "timestamp": item.get("timestamp", ""),
+                            "filename": result.filename,
+                            "frames_processed": result.frames_processed,
+                            "motion_events": result.motion_events,
+                            "processing_time": result.processing_time,
+                            "output_files": len(result.output_files),
+                            "error": result.error,
+                        }
+                    )
+
+        if history_data:
+            history_df = pd.DataFrame(history_data)
             st.dataframe(history_df)
 
     def _render_audio_tab(self):
