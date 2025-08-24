@@ -141,6 +141,51 @@ class MotionDetector:
         )
         return result
 
+    def detect_motion_streaming(
+        self, video_path: str, progress_callback=None
+    ) -> MotionResult:
+        """
+        Memory-efficient motion detection that processes frames one by one
+        without storing them in memory.
+        """
+        # Initialize with running average baseline (not stored frames)
+        baseline_avg = None
+        baseline_count = 0
+
+        # Process frames one by one
+        for frame_idx in range(0, total_frames, self.frame_step):
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # Update running average baseline
+            frame_resized = cv2.resize(frame, (640, 360))
+            if baseline_avg is None:
+                baseline_avg = frame_resized.astype(np.float32)
+            else:
+                baseline_avg = (baseline_avg * baseline_count + frame_resized) / (
+                    baseline_count + 1
+                )
+            baseline_count += 1
+
+            # Calculate motion score using current frame vs running average
+            score = self._calculate_streaming_motion_score(frame_resized, baseline_avg)
+
+            if score > self.config.processing.motion_threshold:
+                frame_indices.append(frame_idx)
+            motion_scores.append(score)
+
+        # Return results without keeping frames in memory
+        return MotionResult(
+            frame_indices=frame_indices,
+            motion_scores=motion_scores,
+            avg_motion=np.mean(motion_scores),  # Approximate average for streaming
+            peak_motion=np.max(motion_scores),  # Approximate peak for streaming
+            motion_variance=np.var(motion_scores),  # Approximate variance for streaming
+            total_frames=total_frames,
+            processed_frames=len(motion_scores),
+        )
+
     def _get_baseline_frames(
         self, cap: cv2.VideoCapture, num_frames: int = 10
     ) -> List[np.ndarray]:
