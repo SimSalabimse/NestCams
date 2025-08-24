@@ -181,6 +181,14 @@ class AppConfig(BaseModel):
             with tempfile.TemporaryDirectory() as temp_dir:
                 temp_path = Path(temp_dir)
 
+                # Initialize motion detection variables
+                frame_indices = []
+                motion_scores = []
+
+                # Initialize baseline variables for streaming
+                baseline_avg = None
+                baseline_count = 0
+
                 # Process in chunks
                 chunk_outputs = []
                 for chunk_start in range(0, total_frames, chunk_size):
