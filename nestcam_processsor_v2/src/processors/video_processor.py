@@ -183,7 +183,7 @@ class VideoProcessor:
             if progress_callback:
                 progress_callback(5, "Detecting motion...", 0)
 
-            motion_result = self.motion_detector.detect_motion(
+            motion_result = self.motion_detector.detect_motion_streaming(
                 input_path,
                 progress_callback=lambda p, cf, tf: progress_callback(
                     5 + (p * 0.3), f"Motion detection: {cf}", tf
@@ -203,7 +203,7 @@ class VideoProcessor:
                     progress = 35 + (i / total_durations) * 60
                     progress_callback(progress, f"Generating {duration}s video...", i)
 
-                output_file = self._generate_video(
+                output_file = self._generate_video_streaming(
                     input_path,
                     duration,
                     motion_result.frame_indices,
@@ -572,3 +572,87 @@ class VideoProcessor:
         except subprocess.CalledProcessError as e:
             self.logger.error(f"Failed to add silent audio: {e.stderr}")
             return video_path  # Return original video if silent audio addition fails
+
+    def _generate_video_streaming(
+        self,
+        input_path: str,
+        duration: int,
+        frame_indices: List[int],
+        output_format: str,
+        output_dir: Optional[str],
+        watermark_text: Optional[str],
+        progress_callback: Optional[Callable] = None,
+    ) -> str:
+        """Generate output video for specific duration using streaming"""
+
+        # Create output filename
+        base_name = Path(input_path).stem
+        output_filename = f"{base_name}_{duration}s.{output_format}"
+
+        if output_dir:
+            output_path = Path(output_dir) / output_filename
+        else:
+            output_path = Path(input_path).parent / output_filename
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Get video properties
+        cap = cv2.VideoCapture(input_path)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cap.release()
+
+        # Calculate target frames
+        target_frames = int(duration * fps)
+
+        if len(frame_indices) > target_frames:
+            # Select frames evenly distributed
+            step = len(frame_indices) / target_frames
+            selected_indices = [
+                frame_indices[int(i * step)] for i in range(target_frames)
+            ]
+        else:
+            selected_indices = frame_indices
+
+        # Use OpenCV VideoWriter directly (no temp files)
+        # Process frames one-by-one
+        # Direct writing to output file
+        # No ProcessPoolExecutor
+
+        # OpenCV VideoWriter
+        fourcc = cv2.VideoWriter_fourcc(*output_format.upper())
+        out = cv2.VideoWriter(str(output_path), fourcc, fps, (width, height))
+
+        try:
+            for i, frame_idx in enumerate(selected_indices):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+
+                if not ret:
+                    break
+
+                # Enhance frame
+                enhanced_frame = self.enhancer.enhance_frame(frame)
+
+                # Add watermark if specified
+                if watermark_text:
+                    enhanced_frame = self._add_watermark(enhanced_frame, watermark_text)
+
+                # Write frame
+                out.write(enhanced_frame)
+
+                if progress_callback:
+                    progress = (i / len(selected_indices)) * 100
+                    progress_callback(
+                        progress,
+                        f"Generating {duration}s video (streaming): {i+1}/{len(selected_indices)}",
+                        len(selected_indices),
+                    )
+
+        finally:
+            out.release()
+            cap.release()
+
+        self.logger.info(f"Video streaming generated successfully: {output_path}")
+        return str(output_path)
