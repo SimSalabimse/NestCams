@@ -160,6 +160,10 @@ class MotionDetector:
         frame_indices = []
         motion_scores = []
 
+        # Initialize baseline variables for streaming
+        baseline_avg = None
+        baseline_count = 0
+
         # Process frames one by one
         for frame_idx in range(0, total_frames, self.frame_step):
             ret, frame = cap.read()
