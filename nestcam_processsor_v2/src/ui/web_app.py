@@ -463,22 +463,20 @@ class NestCamApp:
         st.subheader("Processing Results")
 
         for result in results:
-            with st.expander(f"📹 {result['filename']}"):
+            with st.expander(f"📹 {result.filename}"):
                 col1, col2, col3 = st.columns(3)
 
                 with col1:
-                    st.metric("Frames Processed", result.get("frames_processed", 0))
+                    st.metric("Frames Processed", result.frames_processed)
                 with col2:
-                    st.metric("Motion Events", result.get("motion_events", 0))
+                    st.metric("Motion Events", result.motion_events)
                 with col3:
-                    st.metric(
-                        "Processing Time", f"{result.get('processing_time', 0):.1f}s"
-                    )
+                    st.metric("Processing Time", f"{result.processing_time:.1f}s")
 
                 # Display output files
-                if "output_files" in result:
+                if result.output_files:
                     st.write("**Output Files:**")
-                    for output_file in result["output_files"]:
+                    for output_file in result.output_files:
                         col1, col2 = st.columns([4, 1])
                         with col1:
                             st.write(f"📄 {Path(output_file).name}")
