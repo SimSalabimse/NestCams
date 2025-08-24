@@ -1,0 +1,13 @@
+[server]
+maxUploadSize = 102400
+maxMessageSize = 102400
+maxUploadSizePerFile = 102400
+
+[client]
+showSidebarNavigation = true
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "dark"

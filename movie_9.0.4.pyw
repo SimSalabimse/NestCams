@@ -31,7 +31,9 @@ try:
     import speedtest
 except ImportError:
     speedtest = None
-    logging.warning("speedtest module not found. Network stability checks will be limited.")
+    logging.warning(
+        "speedtest module not found. Network stability checks will be limited."
+    )
 
 VERSION = "9.0.4_beta"
 UPDATE_CHANNELS = ["Stable", "Beta"]
@@ -41,14 +43,16 @@ log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log")
 os.makedirs(log_dir, exist_ok=True)
 
 logging.basicConfig(
-    filename=os.path.join(log_dir, 'processor_log.txt'),
+    filename=os.path.join(log_dir, "processor_log.txt"),
     level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(levelname)s - %(message)s",
 )
-session_log_file = os.path.join(log_dir, f"session_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
-session_logger = logging.getLogger('session')
+session_log_file = os.path.join(
+    log_dir, f"session_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+)
+session_logger = logging.getLogger("session")
 session_handler = logging.FileHandler(session_log_file)
-session_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+session_handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
 session_logger.addHandler(session_handler)
 session_logger.setLevel(logging.INFO)
 
@@ -59,15 +63,17 @@ cancel_event = Event()
 BATCH_SIZE = 4
 WORKER_PROCESSES = 2
 
+
 def log_session(message):
     """Log a message to the session log file."""
     session_logger.info(message)
+
 
 def check_system_specs():
     """Adjust processing parameters based on system specifications."""
     global BATCH_SIZE, WORKER_PROCESSES
     cpu_cores = os.cpu_count() or 1
-    total_ram_gb = psutil.virtual_memory().total / (1024 ** 3)
+    total_ram_gb = psutil.virtual_memory().total / (1024**3)
 
     if total_ram_gb < 8:
         BATCH_SIZE = max(1, cpu_cores // 2)
@@ -86,6 +92,7 @@ def check_system_specs():
     logging.info(f"Configured: Batch size={BATCH_SIZE}, Workers={WORKER_PROCESSES}")
     log_session(f"Configured: Batch size={BATCH_SIZE}, Workers={WORKER_PROCESSES}")
 
+
 def compute_motion_score(prev_frame, current_frame, threshold=30):
     """Compute the motion score between two frames."""
     if prev_frame is None or current_frame is None:
@@ -97,13 +104,17 @@ def compute_motion_score(prev_frame, current_frame, threshold=30):
     logging.debug(f"Motion score: {score}")
     return score
 
+
 def is_white_or_black_frame(frame, white_threshold=200, black_threshold=50):
     """Check if a frame is predominantly white or black."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     mean_brightness = np.mean(gray)
     return mean_brightness > white_threshold or mean_brightness < black_threshold
 
-def normalize_frame(frame, output_resolution, clip_limit=1.0, saturation_multiplier=1.1):
+
+def normalize_frame(
+    frame, output_resolution, clip_limit=1.0, saturation_multiplier=1.1
+):
     """Normalize and enhance a frame's visual quality."""
     try:
         frame = cv2.resize(frame, output_resolution, interpolation=cv2.INTER_AREA)
@@ -123,10 +134,11 @@ def normalize_frame(frame, output_resolution, clip_limit=1.0, saturation_multipl
         log_session(f"Error in normalize_frame: {str(e)}")
         return None
 
+
 def validate_video_file(file_path):
     """Validate the integrity of a video file using FFmpeg."""
     try:
-        cmd = ['ffmpeg', '-i', file_path, '-f', 'null', '-']
+        cmd = ["ffmpeg", "-i", file_path, "-f", "null", "-"]
         subprocess.run(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE, check=True)
         logging.info(f"Validated video file: {file_path}")
         log_session(f"Validated video file: {file_path}")
@@ -135,6 +147,7 @@ def validate_video_file(file_path):
         logging.error(f"Validation failed for {file_path}: {e.stderr.decode()}")
         log_session(f"Validation failed for {file_path}: {e.stderr.decode()}")
         return False
+
 
 def check_network_stability():
     """Check network stability for YouTube upload."""
@@ -163,7 +176,14 @@ def check_network_stability():
         log_session(f"Network check failed: {str(e)}")
         return False
 
-def get_selected_indices(input_path, motion_threshold, white_threshold, black_threshold, progress_callback=None):
+
+def get_selected_indices(
+    input_path,
+    motion_threshold,
+    white_threshold,
+    black_threshold,
+    progress_callback=None,
+):
     """Identify frames with significant motion."""
     global cancel_event
     logging.info(f"Starting motion detection for {input_path}")
@@ -192,7 +212,9 @@ def get_selected_indices(input_path, motion_threshold, white_threshold, black_th
         frame_resized = cv2.resize(frame, (640, 360))  # Fixed size for motion detection
         if prev_frame_resized is not None:
             motion_score = compute_motion_score(prev_frame_resized, frame_resized)
-            if motion_score > motion_threshold and not is_white_or_black_frame(frame_resized, white_threshold, black_threshold):
+            if motion_score > motion_threshold and not is_white_or_black_frame(
+                frame_resized, white_threshold, black_threshold
+            ):
                 selected_indices.append(frame_idx)
         prev_frame_resized = frame_resized
         if frame_idx % 100 == 0 and progress_callback:
@@ -202,11 +224,24 @@ def get_selected_indices(input_path, motion_threshold, white_threshold, black_th
             progress = (frame_idx / total_frames) * 100
             progress_callback(progress, frame_idx, total_frames, remaining)
     cap.release()
-    logging.info(f"Motion detection completed for {input_path}, {len(selected_indices)} frames selected")
-    log_session(f"Motion detection completed for {input_path}, {len(selected_indices)} frames selected")
+    logging.info(
+        f"Motion detection completed for {input_path}, {len(selected_indices)} frames selected"
+    )
+    log_session(
+        f"Motion detection completed for {input_path}, {len(selected_indices)} frames selected"
+    )
     return selected_indices
 
-def process_frame_batch(input_path, clip_limit, saturation_multiplier, rotate, temp_dir, tasks, output_resolution):
+
+def process_frame_batch(
+    input_path,
+    clip_limit,
+    saturation_multiplier,
+    rotate,
+    temp_dir,
+    tasks,
+    output_resolution,
+):
     """Process a batch of frames in parallel."""
     global cancel_event
     if cancel_event.is_set():
@@ -224,7 +259,9 @@ def process_frame_batch(input_path, clip_limit, saturation_multiplier, rotate, t
         ret, frame = cap.read()
         if not ret:
             continue
-        normalized_frame = normalize_frame(frame, output_resolution, clip_limit, saturation_multiplier)
+        normalized_frame = normalize_frame(
+            frame, output_resolution, clip_limit, saturation_multiplier
+        )
         if normalized_frame is None:
             continue
         if rotate:
@@ -235,20 +272,50 @@ def process_frame_batch(input_path, clip_limit, saturation_multiplier, rotate, t
     cap.release()
     return results
 
+
 def probe_video_resolution(video_path):
     """Probe the resolution of a video file using FFmpeg."""
-    cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'csv=p=0', video_path]
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height",
+        "-of",
+        "csv=p=0",
+        video_path,
+    ]
     output = subprocess.check_output(cmd).decode().strip()
-    width, height = map(int, output.split(','))
+    width, height = map(int, output.split(","))
     return width, height
 
-def generate_output_video(input_path, output_path, desired_duration, selected_indices, output_resolution, clip_limit=1.0, saturation_multiplier=1.1,
-                         output_format='mp4', progress_callback=None, music_paths=None, music_volume=1.0,
-                         status_callback=None, custom_ffmpeg_args=None, watermark_text=None):
+
+def generate_output_video(
+    input_path,
+    output_path,
+    desired_duration,
+    selected_indices,
+    output_resolution,
+    clip_limit=1.0,
+    saturation_multiplier=1.1,
+    output_format="mp4",
+    progress_callback=None,
+    music_paths=None,
+    music_volume=1.0,
+    status_callback=None,
+    custom_ffmpeg_args=None,
+    watermark_text=None,
+):
     """Generate a video from selected frames with optional enhancements."""
     try:
-        logging.info(f"Generating video: {output_path} with resolution {output_resolution}")
-        log_session(f"Generating video: {output_path} with resolution {output_resolution}")
+        logging.info(
+            f"Generating video: {output_path} with resolution {output_resolution}"
+        )
+        log_session(
+            f"Generating video: {output_path} with resolution {output_resolution}"
+        )
         if status_callback:
             status_callback("Opening video file...")
         cap = cv2.VideoCapture(input_path)
@@ -256,16 +323,20 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
             logging.error(f"Cannot open video file: {input_path}")
             log_session(f"Error: Cannot open video file: {input_path}")
             return "Failed to open video file", 0, 0, 0
-        
+
         fps = cap.get(cv2.CAP_PROP_FPS)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
-        
+
         if total_frames <= 0 or fps <= 0:
-            logging.error(f"Invalid video properties: total_frames={total_frames}, fps={fps}")
-            log_session(f"Error: Invalid video properties: total_frames={total_frames}, fps={fps}")
+            logging.error(
+                f"Invalid video properties: total_frames={total_frames}, fps={fps}"
+            )
+            log_session(
+                f"Error: Invalid video properties: total_frames={total_frames}, fps={fps}"
+            )
             return "Invalid video properties", 0, 0, 0
-        
+
         # Rotate short videos (≤ 60s) to vertical orientation
         rotate = desired_duration <= 60
         start_time = time.time()
@@ -274,17 +345,22 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
             target_frames_count = int(desired_duration * fps)
             if len(selected_indices) > target_frames_count:
                 step = len(selected_indices) / target_frames_count
-                final_indices = [selected_indices[int(i * step)] for i in range(target_frames_count)]
+                final_indices = [
+                    selected_indices[int(i * step)] for i in range(target_frames_count)
+                ]
             else:
                 final_indices = selected_indices
-            
+
             if status_callback:
                 status_callback("Saving processed frames...")
             logging.info("Saving processed frames")
             log_session("Saving processed frames")
             frame_tasks = [(idx, i) for i, idx in enumerate(final_indices)]
-            task_batches = [frame_tasks[i:i + BATCH_SIZE] for i in range(0, len(frame_tasks), BATCH_SIZE)]
-            
+            task_batches = [
+                frame_tasks[i : i + BATCH_SIZE]
+                for i in range(0, len(frame_tasks), BATCH_SIZE)
+            ]
+
             with Pool(processes=WORKER_PROCESSES) as pool:
                 partial_process_frame_batch = functools.partial(
                     process_frame_batch,
@@ -293,11 +369,11 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
                     saturation_multiplier,
                     rotate,
                     temp_dir,
-                    output_resolution=output_resolution
+                    output_resolution=output_resolution,
                 )
                 results = pool.map(partial_process_frame_batch, task_batches)
                 frame_counter = sum(len(batch) for batch in results)
-            
+
             logging.info(f"Saved {frame_counter} frames to temporary directory")
             log_session(f"Saved {frame_counter} frames to temporary directory")
             if status_callback:
@@ -310,35 +386,63 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
 
             # Verify first frame size
             if frame_counter > 0:
-                first_frame_path = os.path.join(temp_dir, 'frame_0000.jpg')
+                first_frame_path = os.path.join(temp_dir, "frame_0000.jpg")
                 with Image.open(first_frame_path) as img:
                     logging.info(f"First frame size: {img.size}")
                     log_session(f"First frame size: {img.size}")
 
             num_frames = frame_counter
-            new_fps = num_frames / desired_duration if num_frames < target_frames_count else fps
-            logging.info(f"Parameters: num_frames={num_frames}, target_frames_count={target_frames_count}, new_fps={new_fps:.2f}")
-            log_session(f"Parameters: num_frames={num_frames}, target_frames_count={target_frames_count}, new_fps={new_fps:.2f}")
+            new_fps = (
+                num_frames / desired_duration
+                if num_frames < target_frames_count
+                else fps
+            )
+            logging.info(
+                f"Parameters: num_frames={num_frames}, target_frames_count={target_frames_count}, new_fps={new_fps:.2f}"
+            )
+            log_session(
+                f"Parameters: num_frames={num_frames}, target_frames_count={target_frames_count}, new_fps={new_fps:.2f}"
+            )
 
             if status_callback:
                 status_callback("Creating video from frames...")
             logging.info("Creating video with FFmpeg")
             log_session("Creating video with FFmpeg")
             temp_final_path = f"temp_final_{uuid.uuid4().hex}.{output_format}"
-            
-            cmd = ['ffmpeg', '-framerate', str(new_fps), '-i', os.path.join(temp_dir, 'frame_%04d.jpg'), '-s', f"{output_resolution[0]}x{output_resolution[1]}"]
+
+            cmd = [
+                "ffmpeg",
+                "-framerate",
+                str(new_fps),
+                "-i",
+                os.path.join(temp_dir, "frame_%04d.jpg"),
+                "-s",
+                f"{output_resolution[0]}x{output_resolution[1]}",
+            ]
             try:
-                subprocess.run(['ffmpeg', '-hwaccels'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-                cmd.extend(['-c:v', 'h264_nvenc', '-preset', 'fast'])
+                subprocess.run(
+                    ["ffmpeg", "-hwaccels"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=True,
+                )
+                cmd.extend(["-c:v", "h264_nvenc", "-preset", "fast"])
             except subprocess.CalledProcessError:
-                cmd.extend(['-c:v', 'libx264', '-preset', 'fast'])
-            cmd.extend(['-pix_fmt', 'yuv420p', '-r', str(new_fps)])
+                cmd.extend(["-c:v", "libx264", "-preset", "fast"])
+            cmd.extend(["-pix_fmt", "yuv420p", "-r", str(new_fps)])
             if watermark_text:
-                cmd.extend(['-vf', f'drawtext=text={watermark_text}:fontcolor=white:fontsize=24:x=10:y=10'])
+                cmd.extend(
+                    [
+                        "-vf",
+                        f"drawtext=text={watermark_text}:fontcolor=white:fontsize=24:x=10:y=10",
+                    ]
+                )
             if custom_ffmpeg_args:
                 cmd.extend(custom_ffmpeg_args)
-            cmd.extend(['-y', temp_final_path])
-            subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+            cmd.extend(["-y", temp_final_path])
+            subprocess.run(
+                cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE
+            )
             logging.info("Video created from frames")
             log_session("Video created from frames")
 
@@ -347,18 +451,41 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
             logging.info(f"Temp video resolution: {width}x{height}")
             log_session(f"Temp video resolution: {width}x{height}")
 
-            music_path = music_paths.get(desired_duration, music_paths.get("default")) if music_paths else None
+            music_path = (
+                music_paths.get(desired_duration, music_paths.get("default"))
+                if music_paths
+                else None
+            )
             if music_path and os.path.exists(music_path):
                 if status_callback:
                     status_callback("Adding music...")
                 logging.info("Adding music with FFmpeg")
                 log_session("Adding music with FFmpeg")
                 cmd = [
-                    'ffmpeg', '-i', temp_final_path, '-stream_loop', '-1', '-i', music_path,
-                    '-filter_complex', f"[1:a]volume={music_volume}[a]",
-                    '-map', '0:v', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac', '-shortest', '-y', output_path
+                    "ffmpeg",
+                    "-i",
+                    temp_final_path,
+                    "-stream_loop",
+                    "-1",
+                    "-i",
+                    music_path,
+                    "-filter_complex",
+                    f"[1:a]volume={music_volume}[a]",
+                    "-map",
+                    "0:v",
+                    "-map",
+                    "[a]",
+                    "-c:v",
+                    "copy",
+                    "-c:a",
+                    "aac",
+                    "-shortest",
+                    "-y",
+                    output_path,
                 ]
-                subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+                subprocess.run(
+                    cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE
+                )
                 logging.info(f"Music added to {output_path}")
                 log_session(f"Music added to {output_path}")
             else:
@@ -367,10 +494,24 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
                 logging.info("Adding silent audio with FFmpeg")
                 log_session("Adding silent audio with FFmpeg")
                 cmd = [
-                    'ffmpeg', '-i', temp_final_path, '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=44100',
-                    '-c:v', 'copy', '-c:a', 'aac', '-shortest', '-y', output_path
+                    "ffmpeg",
+                    "-i",
+                    temp_final_path,
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "anullsrc=channel_layout=stereo:sample_rate=44100",
+                    "-c:v",
+                    "copy",
+                    "-c:a",
+                    "aac",
+                    "-shortest",
+                    "-y",
+                    output_path,
                 ]
-                subprocess.run(cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+                subprocess.run(
+                    cmd, check=True, stderr=subprocess.PIPE, stdout=subprocess.PIPE
+                )
                 logging.info(f"Silent audio added to {output_path}")
                 log_session(f"Silent audio added to {output_path}")
 
@@ -391,8 +532,10 @@ def generate_output_video(input_path, output_path, desired_duration, selected_in
         log_session(f"Error: {str(e)}")
         return f"Error: {str(e)}", 0, 0, 0
 
+
 class VideoProcessorApp:
     """Main application class for video processing GUI with YouTube upload."""
+
     def __init__(self, root):
         self.root = root
         self.root.title(f"Bird Box Video Processor v{VERSION}")
@@ -410,42 +553,70 @@ class VideoProcessorApp:
         theme_frame = ctk.CTkFrame(root)
         theme_frame.pack(pady=5)
         ctk.CTkLabel(theme_frame, text="Theme:").pack(side=tk.LEFT, padx=5)
-        ctk.CTkOptionMenu(theme_frame, variable=self.theme_var, values=["Light", "Dark"], command=self.toggle_theme).pack(side=tk.LEFT)
+        ctk.CTkOptionMenu(
+            theme_frame,
+            variable=self.theme_var,
+            values=["Light", "Dark"],
+            command=self.toggle_theme,
+        ).pack(side=tk.LEFT)
 
         self.label = ctk.CTkLabel(root, text="Select Input Video(s)")
         self.label.pack(pady=10)
 
         self.generate_60s = tk.BooleanVar(value=True)
-        self.switch_60s = ctk.CTkSwitch(root, text="Generate 60s Video", variable=self.generate_60s)
+        self.switch_60s = ctk.CTkSwitch(
+            root, text="Generate 60s Video", variable=self.generate_60s
+        )
         self.switch_60s.pack(pady=5)
 
         self.generate_12min = tk.BooleanVar(value=True)
-        self.switch_12min = ctk.CTkSwitch(root, text="Generate 12min Video", variable=self.generate_12min)
+        self.switch_12min = ctk.CTkSwitch(
+            root, text="Generate 12min Video", variable=self.generate_12min
+        )
         self.switch_12min.pack(pady=5)
 
         self.generate_1h = tk.BooleanVar(value=True)
-        self.switch_1h = ctk.CTkSwitch(root, text="Generate 1h Video", variable=self.generate_1h)
+        self.switch_1h = ctk.CTkSwitch(
+            root, text="Generate 1h Video", variable=self.generate_1h
+        )
         self.switch_1h.pack(pady=5)
 
         custom_frame = ctk.CTkFrame(root)
         custom_frame.pack(pady=5)
-        ctk.CTkLabel(custom_frame, text="Custom Duration (seconds):").pack(side=tk.LEFT, padx=5)
-        self.custom_duration_entry = ctk.CTkEntry(custom_frame, placeholder_text="e.g., 120")
+        ctk.CTkLabel(custom_frame, text="Custom Duration (seconds):").pack(
+            side=tk.LEFT, padx=5
+        )
+        self.custom_duration_entry = ctk.CTkEntry(
+            custom_frame, placeholder_text="e.g., 120"
+        )
         self.custom_duration_entry.pack(side=tk.LEFT, padx=5)
 
         self.output_format_var = tk.StringVar(value="mp4")
         format_frame = ctk.CTkFrame(root)
         format_frame.pack(pady=5)
         ctk.CTkLabel(format_frame, text="Output Format:").pack(side=tk.LEFT, padx=5)
-        ctk.CTkOptionMenu(format_frame, variable=self.output_format_var, values=["mp4", "avi", "mkv", "mov", "wmv"]).pack(side=tk.LEFT)
+        ctk.CTkOptionMenu(
+            format_frame,
+            variable=self.output_format_var,
+            values=["mp4", "avi", "mkv", "mov", "wmv"],
+        ).pack(side=tk.LEFT)
 
-        self.settings_button = ctk.CTkButton(root, text="Settings & Preview", command=self.open_settings)
+        self.settings_button = ctk.CTkButton(
+            root, text="Settings & Preview", command=self.open_settings
+        )
         self.settings_button.pack(pady=5)
 
-        self.browse_button = ctk.CTkButton(root, text="Browse", command=self.browse_files)
+        self.browse_button = ctk.CTkButton(
+            root, text="Browse", command=self.browse_files
+        )
         self.browse_button.pack(pady=5)
 
-        self.start_button = ctk.CTkButton(root, text="Start Processing", command=self.start_processing, state="disabled")
+        self.start_button = ctk.CTkButton(
+            root,
+            text="Start Processing",
+            command=self.start_processing,
+            state="disabled",
+        )
         self.start_button.pack(pady=5)
 
         self.progress = ctk.CTkProgressBar(root, width=300)
@@ -458,14 +629,16 @@ class VideoProcessorApp:
         self.time_label = ctk.CTkLabel(root, text="Estimated Time Remaining: N/A")
         self.time_label.pack(pady=5)
 
-        self.cancel_button = ctk.CTkButton(root, text="Cancel", command=self.cancel_processing, state="disabled")
+        self.cancel_button = ctk.CTkButton(
+            root, text="Cancel", command=self.cancel_processing, state="disabled"
+        )
         self.cancel_button.pack(pady=5)
 
         self.output_label = ctk.CTkLabel(root, text="Output Files:")
         self.output_label.pack(pady=10)
 
         self.output_frame = ctk.CTkScrollableFrame(root)
-        self.output_frame.pack(pady=5, fill='both', expand=True)
+        self.output_frame.pack(pady=5, fill="both", expand=True)
 
         self.input_files = []
         self.queue = queue.Queue()
@@ -473,9 +646,9 @@ class VideoProcessorApp:
         self.start_time = None
         self.preview_image = None
         self.blank_ctk_image = ctk.CTkImage(
-            light_image=Image.new('RGB', (200, 150), (0, 0, 0)),
-            dark_image=Image.new('RGB', (200, 150), (0, 0, 0)),
-            size=(200, 150)
+            light_image=Image.new("RGB", (200, 150), (0, 0, 0)),
+            dark_image=Image.new("RGB", (200, 150), (0, 0, 0)),
+            size=(200, 150),
         )
         self.root.after(50, self.process_queue)
         self.root.after(33, self.update_preview)
@@ -509,14 +682,16 @@ class VideoProcessorApp:
                 self.white_threshold = int(settings.get("white_threshold", 200))
                 self.black_threshold = int(settings.get("black_threshold", 50))
                 self.clip_limit = float(settings.get("clip_limit", 1.0))
-                self.saturation_multiplier = float(settings.get("saturation_multiplier", 1.1))
+                self.saturation_multiplier = float(
+                    settings.get("saturation_multiplier", 1.1)
+                )
                 self.music_volume = float(settings.get("music_volume", 1.0))
                 self.output_dir = settings.get("output_dir", None)
                 self.custom_ffmpeg_args = settings.get("custom_ffmpeg_args", None)
                 self.watermark_text = settings.get("watermark_text", None)
                 self.update_channel = settings.get("update_channel", "Stable")
                 resolution_str = settings.get("output_resolution", "1920x1080")
-                self.output_resolution = tuple(map(int, resolution_str.split('x')))
+                self.output_resolution = tuple(map(int, resolution_str.split("x")))
                 loaded_music_paths = settings.get("music_paths", {})
                 for key in self.music_paths:
                     if str(key) in loaded_music_paths:
@@ -535,8 +710,10 @@ class VideoProcessorApp:
         self.saturation_multiplier = float(self.saturation_slider.get())
         self.music_volume = self.music_volume_slider.get()
         resolution_str = self.resolution_var.get()
-        self.output_resolution = tuple(map(int, resolution_str.split('x')))
-        self.custom_ffmpeg_args = self.ffmpeg_entry.get().split() if self.ffmpeg_entry.get() else None
+        self.output_resolution = tuple(map(int, resolution_str.split("x")))
+        self.custom_ffmpeg_args = (
+            self.ffmpeg_entry.get().split() if self.ffmpeg_entry.get() else None
+        )
         self.watermark_text = self.watermark_entry.get() or None
         self.update_channel = self.update_channel_var.get()
 
@@ -552,7 +729,7 @@ class VideoProcessorApp:
             "custom_ffmpeg_args": self.custom_ffmpeg_args,
             "watermark_text": self.watermark_text,
             "update_channel": self.update_channel,
-            "output_resolution": resolution_str
+            "output_resolution": resolution_str,
         }
         with open("settings.json", "w") as f:
             json.dump(settings, f)
@@ -579,17 +756,21 @@ class VideoProcessorApp:
             response.raise_for_status()
             latest_version_str = response.text.strip()
             if not any(char.isdigit() for char in latest_version_str):
-                raise ValueError(f"Response does not contain a valid version: '{latest_version_str}'")
+                raise ValueError(
+                    f"Response does not contain a valid version: '{latest_version_str}'"
+                )
             current_version = version.parse(VERSION)
             latest_version = version.parse(latest_version_str)
             if latest_version > current_version:
                 messagebox.showinfo(
                     "Update Available",
-                    f"Version {latest_version_str} is available for {channel} channel! Please restart to update."
+                    f"Version {latest_version_str} is available for {channel} channel! Please restart to update.",
                 )
                 log_session(f"Update available for {channel}: {latest_version_str}")
             else:
-                log_session(f"No update available. Current: {VERSION}, Latest: {latest_version_str}")
+                log_session(
+                    f"No update available. Current: {VERSION}, Latest: {latest_version_str}"
+                )
         except requests.RequestException as e:
             logging.error(f"Failed to fetch update information from {url}: {e}")
             log_session(f"Update check failed due to network issue: {e}")
@@ -617,66 +798,120 @@ class VideoProcessorApp:
         log_session("Opened settings and preview window")
 
         settings_frame = ctk.CTkScrollableFrame(self.settings_window)
-        settings_frame.pack(side=tk.LEFT, padx=10, pady=10, fill='both', expand=True)
+        settings_frame.pack(side=tk.LEFT, padx=10, pady=10, fill="both", expand=True)
 
         ctk.CTkLabel(settings_frame, text="Motion Sensitivity").pack(pady=5)
-        self.motion_slider = ctk.CTkSlider(settings_frame, from_=500, to=20000, number_of_steps=195, command=self.update_settings)
+        self.motion_slider = ctk.CTkSlider(
+            settings_frame,
+            from_=500,
+            to=20000,
+            number_of_steps=195,
+            command=self.update_settings,
+        )
         self.motion_slider.set(self.motion_threshold)
         self.motion_slider.pack(pady=5)
-        self.motion_value_label = ctk.CTkLabel(settings_frame, text=f"Threshold: {self.motion_threshold}")
+        self.motion_value_label = ctk.CTkLabel(
+            settings_frame, text=f"Threshold: {self.motion_threshold}"
+        )
         self.motion_value_label.pack(pady=5)
 
         ctk.CTkLabel(settings_frame, text="White Threshold").pack(pady=2)
-        self.white_slider = ctk.CTkSlider(settings_frame, from_=100, to=255, number_of_steps=155, command=self.update_settings)
+        self.white_slider = ctk.CTkSlider(
+            settings_frame,
+            from_=100,
+            to=255,
+            number_of_steps=155,
+            command=self.update_settings,
+        )
         self.white_slider.set(self.white_threshold)
         self.white_slider.pack(pady=2)
-        self.white_value_label = ctk.CTkLabel(settings_frame, text=f"White: {self.white_threshold}")
+        self.white_value_label = ctk.CTkLabel(
+            settings_frame, text=f"White: {self.white_threshold}"
+        )
         self.white_value_label.pack(pady=2)
 
         ctk.CTkLabel(settings_frame, text="Black Threshold").pack(pady=2)
-        self.black_slider = ctk.CTkSlider(settings_frame, from_=0, to=100, number_of_steps=100, command=self.update_settings)
+        self.black_slider = ctk.CTkSlider(
+            settings_frame,
+            from_=0,
+            to=100,
+            number_of_steps=100,
+            command=self.update_settings,
+        )
         self.black_slider.set(self.black_threshold)
         self.black_slider.pack(pady=2)
-        self.black_value_label = ctk.CTkLabel(settings_frame, text=f"Black: {self.black_threshold}")
+        self.black_value_label = ctk.CTkLabel(
+            settings_frame, text=f"Black: {self.black_threshold}"
+        )
         self.black_value_label.pack(pady=2)
 
         ctk.CTkLabel(settings_frame, text="CLAHE Clip Limit").pack(pady=2)
-        self.clip_slider = ctk.CTkSlider(settings_frame, from_=0.2, to=5.0, number_of_steps=96, command=self.update_settings)
+        self.clip_slider = ctk.CTkSlider(
+            settings_frame,
+            from_=0.2,
+            to=5.0,
+            number_of_steps=96,
+            command=self.update_settings,
+        )
         self.clip_slider.set(self.clip_limit)
         self.clip_slider.pack(pady=2)
-        self.clip_value_label = ctk.CTkLabel(settings_frame, text=f"Clip Limit: {self.clip_limit:.1f}")
+        self.clip_value_label = ctk.CTkLabel(
+            settings_frame, text=f"Clip Limit: {self.clip_limit:.1f}"
+        )
         self.clip_value_label.pack(pady=2)
 
         ctk.CTkLabel(settings_frame, text="Saturation Multiplier").pack(pady=2)
-        self.saturation_slider = ctk.CTkSlider(settings_frame, from_=0.5, to=2.0, number_of_steps=150, command=self.update_settings)
+        self.saturation_slider = ctk.CTkSlider(
+            settings_frame,
+            from_=0.5,
+            to=2.0,
+            number_of_steps=150,
+            command=self.update_settings,
+        )
         self.saturation_slider.set(self.saturation_multiplier)
         self.saturation_slider.pack(pady=2)
-        self.saturation_value_label = ctk.CTkLabel(settings_frame, text=f"Saturation: {self.saturation_multiplier:.1f}")
+        self.saturation_value_label = ctk.CTkLabel(
+            settings_frame, text=f"Saturation: {self.saturation_multiplier:.1f}"
+        )
         self.saturation_value_label.pack(pady=2)
 
         ctk.CTkLabel(settings_frame, text="Output Resolution").pack(pady=5)
         resolution_options = ["320x180", "640x360", "1280x720", "1920x1080"]
-        self.resolution_var = tk.StringVar(value=f"{self.output_resolution[0]}x{self.output_resolution[1]}")
-        self.resolution_menu = ctk.CTkOptionMenu(settings_frame, variable=self.resolution_var, values=resolution_options)
+        self.resolution_var = tk.StringVar(
+            value=f"{self.output_resolution[0]}x{self.output_resolution[1]}"
+        )
+        self.resolution_menu = ctk.CTkOptionMenu(
+            settings_frame, variable=self.resolution_var, values=resolution_options
+        )
         self.resolution_menu.pack(pady=5)
 
         update_channel_frame = ctk.CTkFrame(settings_frame)
         update_channel_frame.pack(pady=5)
         ctk.CTkLabel(update_channel_frame, text="Update Channel:").pack(side=tk.LEFT)
         self.update_channel_var = tk.StringVar(value=self.update_channel)
-        ctk.CTkOptionMenu(update_channel_frame, variable=self.update_channel_var, values=UPDATE_CHANNELS).pack(side=tk.LEFT)
+        ctk.CTkOptionMenu(
+            update_channel_frame,
+            variable=self.update_channel_var,
+            values=UPDATE_CHANNELS,
+        ).pack(side=tk.LEFT)
 
         output_dir_frame = ctk.CTkFrame(settings_frame)
         output_dir_frame.pack(pady=5)
         ctk.CTkLabel(output_dir_frame, text="Output Directory:").pack(side=tk.LEFT)
-        self.output_dir_label = ctk.CTkLabel(output_dir_frame, text=self.output_dir or "Default")
+        self.output_dir_label = ctk.CTkLabel(
+            output_dir_frame, text=self.output_dir or "Default"
+        )
         self.output_dir_label.pack(side=tk.LEFT, padx=5)
-        ctk.CTkButton(output_dir_frame, text="Browse", command=self.select_output_dir).pack(side=tk.LEFT)
+        ctk.CTkButton(
+            output_dir_frame, text="Browse", command=self.select_output_dir
+        ).pack(side=tk.LEFT)
 
         ffmpeg_frame = ctk.CTkFrame(settings_frame)
         ffmpeg_frame.pack(pady=5)
         ctk.CTkLabel(ffmpeg_frame, text="Custom FFmpeg Args:").pack(side=tk.LEFT)
-        self.ffmpeg_entry = ctk.CTkEntry(ffmpeg_frame, placeholder_text="e.g., -vf scale=1280:720")
+        self.ffmpeg_entry = ctk.CTkEntry(
+            ffmpeg_frame, placeholder_text="e.g., -vf scale=1280:720"
+        )
         if self.custom_ffmpeg_args:
             self.ffmpeg_entry.insert(0, " ".join(self.custom_ffmpeg_args))
         self.ffmpeg_entry.pack(side=tk.LEFT, padx=5)
@@ -684,7 +919,9 @@ class VideoProcessorApp:
         watermark_frame = ctk.CTkFrame(settings_frame)
         watermark_frame.pack(pady=5)
         ctk.CTkLabel(watermark_frame, text="Watermark Text:").pack(side=tk.LEFT)
-        self.watermark_entry = ctk.CTkEntry(watermark_frame, placeholder_text="Enter watermark")
+        self.watermark_entry = ctk.CTkEntry(
+            watermark_frame, placeholder_text="Enter watermark"
+        )
         if self.watermark_text:
             self.watermark_entry.insert(0, self.watermark_text)
         self.watermark_entry.pack(side=tk.LEFT, padx=5)
@@ -697,73 +934,138 @@ class VideoProcessorApp:
         default_music_frame.pack(pady=2)
         ctk.CTkLabel(default_music_frame, text="Default Music:").pack(side=tk.LEFT)
         default_path = self.music_paths.get("default")
-        self.music_label_default = ctk.CTkLabel(default_music_frame, text="No music selected" if not default_path else os.path.basename(default_path))
+        self.music_label_default = ctk.CTkLabel(
+            default_music_frame,
+            text=(
+                "No music selected"
+                if not default_path
+                else os.path.basename(default_path)
+            ),
+        )
         self.music_label_default.pack(side=tk.LEFT, padx=5)
-        ctk.CTkButton(default_music_frame, text="Select", command=self.select_music_default).pack(side=tk.LEFT)
+        ctk.CTkButton(
+            default_music_frame, text="Select", command=self.select_music_default
+        ).pack(side=tk.LEFT)
 
         music_60s_frame = ctk.CTkFrame(music_settings_frame)
         music_60s_frame.pack(pady=2)
         ctk.CTkLabel(music_60s_frame, text="Music for 60s Video:").pack(side=tk.LEFT)
         path_60s = self.music_paths.get(60)
-        self.music_label_60s = ctk.CTkLabel(music_60s_frame, text="No music selected" if not path_60s else os.path.basename(path_60s))
+        self.music_label_60s = ctk.CTkLabel(
+            music_60s_frame,
+            text="No music selected" if not path_60s else os.path.basename(path_60s),
+        )
         self.music_label_60s.pack(side=tk.LEFT, padx=5)
-        ctk.CTkButton(music_60s_frame, text="Select", command=self.select_music_60s).pack(side=tk.LEFT)
+        ctk.CTkButton(
+            music_60s_frame, text="Select", command=self.select_music_60s
+        ).pack(side=tk.LEFT)
 
         music_12min_frame = ctk.CTkFrame(music_settings_frame)
         music_12min_frame.pack(pady=2)
-        ctk.CTkLabel(music_12min_frame, text="Music for 12min Video:").pack(side=tk.LEFT)
+        ctk.CTkLabel(music_12min_frame, text="Music for 12min Video:").pack(
+            side=tk.LEFT
+        )
         path_12min = self.music_paths.get(720)
-        self.music_label_12min = ctk.CTkLabel(music_12min_frame, text="No music selected" if not path_12min else os.path.basename(path_12min))
+        self.music_label_12min = ctk.CTkLabel(
+            music_12min_frame,
+            text=(
+                "No music selected" if not path_12min else os.path.basename(path_12min)
+            ),
+        )
         self.music_label_12min.pack(side=tk.LEFT, padx=5)
-        ctk.CTkButton(music_12min_frame, text="Select", command=self.select_music_12min).pack(side=tk.LEFT)
+        ctk.CTkButton(
+            music_12min_frame, text="Select", command=self.select_music_12min
+        ).pack(side=tk.LEFT)
 
         music_1h_frame = ctk.CTkFrame(music_settings_frame)
         music_1h_frame.pack(pady=2)
         ctk.CTkLabel(music_1h_frame, text="Music for 1h Video:").pack(side=tk.LEFT)
         path_1h = self.music_paths.get(3600)
-        self.music_label_1h = ctk.CTkLabel(music_1h_frame, text="No music selected" if not path_1h else os.path.basename(path_1h))
+        self.music_label_1h = ctk.CTkLabel(
+            music_1h_frame,
+            text="No music selected" if not path_1h else os.path.basename(path_1h),
+        )
         self.music_label_1h.pack(side=tk.LEFT, padx=5)
-        ctk.CTkButton(music_1h_frame, text="Select", command=self.select_music_1h).pack(side=tk.LEFT)
+        ctk.CTkButton(music_1h_frame, text="Select", command=self.select_music_1h).pack(
+            side=tk.LEFT
+        )
 
         volume_frame = ctk.CTkFrame(music_settings_frame)
         volume_frame.pack(pady=2)
         ctk.CTkLabel(volume_frame, text="Music Volume (0.0 - 1.0):").pack(side=tk.LEFT)
-        self.music_volume_slider = ctk.CTkSlider(volume_frame, from_=0.0, to=1.0, number_of_steps=100, command=self.update_volume_label)
+        self.music_volume_slider = ctk.CTkSlider(
+            volume_frame,
+            from_=0.0,
+            to=1.0,
+            number_of_steps=100,
+            command=self.update_volume_label,
+        )
         self.music_volume_slider.set(self.music_volume)
         self.music_volume_slider.pack(side=tk.LEFT)
-        self.volume_value_label = ctk.CTkLabel(volume_frame, text=f"{int(self.music_volume * 100)}%")
+        self.volume_value_label = ctk.CTkLabel(
+            volume_frame, text=f"{int(self.music_volume * 100)}%"
+        )
         self.volume_value_label.pack(side=tk.LEFT, padx=5)
 
         schedule_frame = ctk.CTkFrame(settings_frame)
         schedule_frame.pack(pady=10)
-        ctk.CTkLabel(schedule_frame, text="Schedule Processing (HH:MM):").pack(side=tk.LEFT)
-        self.schedule_entry = ctk.CTkEntry(schedule_frame, placeholder_text="e.g., 14:30")
+        ctk.CTkLabel(schedule_frame, text="Schedule Processing (HH:MM):").pack(
+            side=tk.LEFT
+        )
+        self.schedule_entry = ctk.CTkEntry(
+            schedule_frame, placeholder_text="e.g., 14:30"
+        )
         self.schedule_entry.pack(pady=2)
-        ctk.CTkButton(schedule_frame, text="Set Schedule", command=self.set_schedule).pack(pady=2)
+        ctk.CTkButton(
+            schedule_frame, text="Set Schedule", command=self.set_schedule
+        ).pack(pady=2)
 
         preset_frame = ctk.CTkFrame(settings_frame)
         preset_frame.pack(pady=10)
         ctk.CTkLabel(preset_frame, text="Preset Management").pack(pady=5)
-        self.preset_combobox = ctk.CTkComboBox(preset_frame, values=list(self.presets.keys()))
+        self.preset_combobox = ctk.CTkComboBox(
+            preset_frame, values=list(self.presets.keys())
+        )
         self.preset_combobox.pack(pady=2)
-        ctk.CTkButton(preset_frame, text="Load Preset", command=self.load_preset).pack(pady=5)
-        self.preset_name_entry = ctk.CTkEntry(preset_frame, placeholder_text="Enter preset name")
+        ctk.CTkButton(preset_frame, text="Load Preset", command=self.load_preset).pack(
+            pady=5
+        )
+        self.preset_name_entry = ctk.CTkEntry(
+            preset_frame, placeholder_text="Enter preset name"
+        )
         self.preset_name_entry.pack(pady=2)
-        ctk.CTkButton(preset_frame, text="Save Preset", command=self.save_preset).pack(pady=5)
+        ctk.CTkButton(preset_frame, text="Save Preset", command=self.save_preset).pack(
+            pady=5
+        )
 
-        ctk.CTkButton(settings_frame, text="Save Settings", command=self.save_settings).pack(pady=10)
-        ctk.CTkButton(settings_frame, text="Reset to Default", command=self.reset_to_default).pack(pady=10)
+        ctk.CTkButton(
+            settings_frame, text="Save Settings", command=self.save_settings
+        ).pack(pady=10)
+        ctk.CTkButton(
+            settings_frame, text="Reset to Default", command=self.reset_to_default
+        ).pack(pady=10)
 
         self.preview_frame = ctk.CTkFrame(self.settings_window)
         self.preview_frame.pack(side=tk.RIGHT, padx=10, pady=10)
-        self.preview_label = ctk.CTkLabel(self.preview_frame, text="Select a video to enable preview", image=self.blank_ctk_image)
+        self.preview_label = ctk.CTkLabel(
+            self.preview_frame,
+            text="Select a video to enable preview",
+            image=self.blank_ctk_image,
+        )
         self.preview_label.pack(pady=5)
 
         control_frame = ctk.CTkFrame(self.preview_frame)
         control_frame.pack(pady=5)
-        self.preview_button = ctk.CTkButton(control_frame, text="Start Preview", command=self.toggle_preview, state="disabled")
+        self.preview_button = ctk.CTkButton(
+            control_frame,
+            text="Start Preview",
+            command=self.toggle_preview,
+            state="disabled",
+        )
         self.preview_button.pack(side=tk.LEFT, padx=5)
-        self.preview_slider = ctk.CTkSlider(control_frame, from_=0, to=0, number_of_steps=0, command=self.seek_preview)
+        self.preview_slider = ctk.CTkSlider(
+            control_frame, from_=0, to=0, number_of_steps=0, command=self.seek_preview
+        )
         self.preview_slider.pack(side=tk.LEFT, padx=5)
 
         if self.input_files:
@@ -783,14 +1085,22 @@ class VideoProcessorApp:
             if self.preview_cap.isOpened():
                 self.fps = max(self.preview_cap.get(cv2.CAP_PROP_FPS), 1)
                 self.total_frames = int(self.preview_cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                self.preview_slider.configure(to=self.total_frames - 1, number_of_steps=self.total_frames - 1)
+                self.preview_slider.configure(
+                    to=self.total_frames - 1, number_of_steps=self.total_frames - 1
+                )
                 duration = self.total_frames / self.fps
-                ctk.CTkLabel(self.settings_window, text=f"Video duration: {duration:.2f} seconds").pack(pady=5)
+                ctk.CTkLabel(
+                    self.settings_window, text=f"Video duration: {duration:.2f} seconds"
+                ).pack(pady=5)
                 self.preview_button.configure(state="normal")
                 log_session(f"Initialized preview for {self.input_files[0]}")
             else:
-                logging.error(f"Failed to open video for preview: {self.input_files[0]}")
-                log_session(f"Error: Failed to initialize preview for {self.input_files[0]}")
+                logging.error(
+                    f"Failed to open video for preview: {self.input_files[0]}"
+                )
+                log_session(
+                    f"Error: Failed to initialize preview for {self.input_files[0]}"
+                )
                 self.preview_cap = None
 
     def toggle_preview(self):
@@ -879,7 +1189,11 @@ class VideoProcessorApp:
 
     def seek_preview(self, frame_idx):
         """Seek to a specific frame in the preview."""
-        if not self.preview_running and self.preview_cap and self.preview_cap.isOpened():
+        if (
+            not self.preview_running
+            and self.preview_cap
+            and self.preview_cap.isOpened()
+        ):
             frame_idx = int(frame_idx)
             self.preview_cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
             ret, frame = self.preview_cap.read()
@@ -898,7 +1212,9 @@ class VideoProcessorApp:
         directory = filedialog.askdirectory()
         if directory:
             self.output_dir = directory
-            self.output_dir_label.configure(text=os.path.basename(directory) or directory)
+            self.output_dir_label.configure(
+                text=os.path.basename(directory) or directory
+            )
             log_session(f"Selected output directory: {directory}")
 
     def set_schedule(self):
@@ -910,8 +1226,12 @@ class VideoProcessorApp:
             messagebox.showinfo("Success", f"Processing scheduled for {time_str}")
             threading.Thread(target=self.run_scheduler, daemon=True).start()
         except schedule.ScheduleValueError:
-            messagebox.showerror("Error", "Invalid time format. Use HH:MM (e.g., 14:30)")
-            log_session(f"Failed to schedule processing: Invalid time format {time_str}")
+            messagebox.showerror(
+                "Error", "Invalid time format. Use HH:MM (e.g., 14:30)"
+            )
+            log_session(
+                f"Failed to schedule processing: Invalid time format {time_str}"
+            )
 
     def run_scheduler(self):
         """Run the scheduled tasks."""
@@ -937,12 +1257,18 @@ class VideoProcessorApp:
         self.white_value_label.configure(text=f"White: {self.white_threshold}")
         self.black_value_label.configure(text=f"Black: {self.black_threshold}")
         self.clip_value_label.configure(text=f"Clip Limit: {self.clip_limit:.1f}")
-        self.saturation_value_label.configure(text=f"Saturation: {self.saturation_multiplier:.1f}")
-        log_session(f"Updated settings: Motion={self.motion_threshold}, White={self.white_threshold}, Black={self.black_threshold}, Clip={self.clip_limit}, Saturation={self.saturation_multiplier}")
+        self.saturation_value_label.configure(
+            text=f"Saturation: {self.saturation_multiplier:.1f}"
+        )
+        log_session(
+            f"Updated settings: Motion={self.motion_threshold}, White={self.white_threshold}, Black={self.black_threshold}, Clip={self.clip_limit}, Saturation={self.saturation_multiplier}"
+        )
 
     def select_music_default(self):
         """Select default background music."""
-        path = filedialog.askopenfilename(filetypes=[("Audio files", "*.mp3 *.wav *.ogg")])
+        path = filedialog.askopenfilename(
+            filetypes=[("Audio files", "*.mp3 *.wav *.ogg")]
+        )
         if path:
             self.music_paths["default"] = path
             self.music_label_default.configure(text=os.path.basename(path))
@@ -952,7 +1278,9 @@ class VideoProcessorApp:
 
     def select_music_60s(self):
         """Select music for 60s videos."""
-        path = filedialog.askopenfilename(filetypes=[("Audio files", "*.mp3 *.wav *.ogg")])
+        path = filedialog.askopenfilename(
+            filetypes=[("Audio files", "*.mp3 *.wav *.ogg")]
+        )
         if path:
             self.music_paths[60] = path
             self.music_label_60s.configure(text=os.path.basename(path))
@@ -962,7 +1290,9 @@ class VideoProcessorApp:
 
     def select_music_12min(self):
         """Select music for 12-minute videos."""
-        path = filedialog.askopenfilename(filetypes=[("Audio files", "*.mp3 *.wav *.ogg")])
+        path = filedialog.askopenfilename(
+            filetypes=[("Audio files", "*.mp3 *.wav *.ogg")]
+        )
         if path:
             self.music_paths[720] = path
             self.music_label_12min.configure(text=os.path.basename(path))
@@ -972,7 +1302,9 @@ class VideoProcessorApp:
 
     def select_music_1h(self):
         """Select music for 1-hour videos."""
-        path = filedialog.askopenfilename(filetypes=[("Audio files", "*.mp3 *.wav *.ogg")])
+        path = filedialog.askopenfilename(
+            filetypes=[("Audio files", "*.mp3 *.wav *.ogg")]
+        )
         if path:
             self.music_paths[3600] = path
             self.music_label_1h.configure(text=os.path.basename(path))
@@ -1000,13 +1332,17 @@ class VideoProcessorApp:
 
     def browse_files(self):
         """Browse and select input video files."""
-        self.input_files = filedialog.askopenfilenames(filetypes=[("Video files", "*.mp4 *.avi *.mkv *.mov *.wmv")])
+        self.input_files = filedialog.askopenfilenames(
+            filetypes=[("Video files", "*.mp4 *.avi *.mkv *.mov *.wmv")]
+        )
         if self.input_files:
             self.label.configure(text=f"Selected: {len(self.input_files)} file(s)")
             self.start_button.configure(state="normal")
-            if hasattr(self, 'settings_window') and self.settings_window.winfo_exists():
+            if hasattr(self, "settings_window") and self.settings_window.winfo_exists():
                 self.initialize_preview()
-            log_session(f"Selected {len(self.input_files)} file(s): {', '.join(self.input_files)}")
+            log_session(
+                f"Selected {len(self.input_files)} file(s): {', '.join(self.input_files)}"
+            )
         else:
             log_session("No files selected")
 
@@ -1020,10 +1356,17 @@ class VideoProcessorApp:
             log_session("Warning: No files selected")
             messagebox.showwarning("Warning", "No files selected.")
             return
-        if not (self.generate_60s.get() or self.generate_12min.get() or self.generate_1h.get() or self.custom_duration_entry.get()):
+        if not (
+            self.generate_60s.get()
+            or self.generate_12min.get()
+            or self.generate_1h.get()
+            or self.custom_duration_entry.get()
+        ):
             logging.warning("No video generation options selected")
             log_session("Warning: No video generation options selected")
-            messagebox.showwarning("Warning", "Select at least one video duration to generate.")
+            messagebox.showwarning(
+                "Warning", "Select at least one video duration to generate."
+            )
             return
         for widget in self.output_frame.winfo_children():
             widget.destroy()
@@ -1040,7 +1383,9 @@ class VideoProcessorApp:
         threading.Thread(target=self.process_video_thread).start()
         log_session("Started processing thread")
 
-    def process_single_video(self, input_file, selected_videos, output_format, total_tasks, task_count_queue):
+    def process_single_video(
+        self, input_file, selected_videos, output_format, total_tasks, task_count_queue
+    ):
         """Process a single video file."""
         global cancel_event
         try:
@@ -1048,14 +1393,24 @@ class VideoProcessorApp:
             output_files = {}
             task_count = task_count_queue.get()
 
-            self.queue.put(("task_start", f"Motion Detection - {os.path.basename(input_file)}", task_count / total_tasks * 100))
+            self.queue.put(
+                (
+                    "task_start",
+                    f"Motion Detection - {os.path.basename(input_file)}",
+                    task_count / total_tasks * 100,
+                )
+            )
             task_count += 1
+
             def motion_progress_callback(progress, current, total, remaining):
                 self.queue.put(("progress", progress, current, total, remaining))
 
             selected_indices = get_selected_indices(
-                input_file, self.motion_threshold, self.white_threshold, self.black_threshold,
-                progress_callback=motion_progress_callback
+                input_file,
+                self.motion_threshold,
+                self.white_threshold,
+                self.black_threshold,
+                progress_callback=motion_progress_callback,
             )
             if selected_indices is None:
                 self.queue.put(("canceled", "Processing canceled by user"))
@@ -1063,7 +1418,9 @@ class VideoProcessorApp:
             if not selected_indices:
                 logging.warning(f"No frames selected for {input_file}")
                 log_session(f"Warning: No frames selected for {input_file}")
-                self.queue.put(("canceled", "No frames selected after motion detection"))
+                self.queue.put(
+                    ("canceled", "No frames selected after motion detection")
+                )
                 return None
 
             for task_name, duration in selected_videos:
@@ -1072,43 +1429,63 @@ class VideoProcessorApp:
                     return None
                 output_file = f"{base}_{task_name.split()[1] if 'Generate' in task_name else duration}s.{output_format}"
                 if self.output_dir:
-                    output_file = os.path.join(self.output_dir, os.path.basename(output_file))
-                self.queue.put(("task_start", f"{task_name} - {os.path.basename(input_file)}", task_count / total_tasks * 100))
+                    output_file = os.path.join(
+                        self.output_dir, os.path.basename(output_file)
+                    )
+                self.queue.put(
+                    (
+                        "task_start",
+                        f"{task_name} - {os.path.basename(input_file)}",
+                        task_count / total_tasks * 100,
+                    )
+                )
                 task_count += 1
 
                 def progress_callback(progress, current, total, remaining):
-                    logging.info(f"Progress: {progress:.2f}%, {current}/{total}, remaining: {remaining:.2f}s")
+                    logging.info(
+                        f"Progress: {progress:.2f}%, {current}/{total}, remaining: {remaining:.2f}s"
+                    )
                     with thread_lock:
-                        self.queue.put(("progress", progress, current, total, remaining))
+                        self.queue.put(
+                            ("progress", progress, current, total, remaining)
+                        )
 
                 def status_callback(status):
                     logging.info(f"Status update: {status}")
                     self.queue.put(("status", status))
 
-                error, frames_processed, motion_events, proc_time = generate_output_video(
-                    input_file, output_file, duration, selected_indices, self.output_resolution,
-                    clip_limit=self.clip_limit,
-                    saturation_multiplier=self.saturation_multiplier,
-                    output_format=output_format,
-                    progress_callback=progress_callback,
-                    music_paths=self.music_paths,
-                    music_volume=self.music_volume,
-                    status_callback=status_callback,
-                    custom_ffmpeg_args=self.custom_ffmpeg_args,
-                    watermark_text=self.watermark_text
+                error, frames_processed, motion_events, proc_time = (
+                    generate_output_video(
+                        input_file,
+                        output_file,
+                        duration,
+                        selected_indices,
+                        self.output_resolution,
+                        clip_limit=self.clip_limit,
+                        saturation_multiplier=self.saturation_multiplier,
+                        output_format=output_format,
+                        progress_callback=progress_callback,
+                        music_paths=self.music_paths,
+                        music_volume=self.music_volume,
+                        status_callback=status_callback,
+                        custom_ffmpeg_args=self.custom_ffmpeg_args,
+                        watermark_text=self.watermark_text,
+                    )
                 )
                 if error:
                     self.queue.put(("canceled", error))
                     return None
                 else:
                     output_files[task_name] = output_file
-                    self.analytics_data.append({
-                        "file": os.path.basename(input_file),
-                        "duration": duration,
-                        "frames_processed": frames_processed,
-                        "motion_events": motion_events,
-                        "processing_time": proc_time
-                    })
+                    self.analytics_data.append(
+                        {
+                            "file": os.path.basename(input_file),
+                            "duration": duration,
+                            "frames_processed": frames_processed,
+                            "motion_events": motion_events,
+                            "processing_time": proc_time,
+                        }
+                    )
             task_count_queue.put(task_count)
             return output_files
         except Exception as e:
@@ -1125,7 +1502,9 @@ class VideoProcessorApp:
             log_session("Processing thread started")
             selected_videos = []
             if self.generate_60s.get():
-                selected_videos.append(("Generate 60s Video", 59))  # Changed from 60 to 59
+                selected_videos.append(
+                    ("Generate 60s Video", 59)
+                )  # Changed from 60 to 59
             if self.generate_12min.get():
                 selected_videos.append(("Generate 12min Video", 720))
             if self.generate_1h.get():
@@ -1135,7 +1514,9 @@ class VideoProcessorApp:
                 try:
                     duration = int(custom_duration)
                     if duration > 0:
-                        selected_videos.append((f"Generate {duration}s Video", duration))
+                        selected_videos.append(
+                            (f"Generate {duration}s Video", duration)
+                        )
                     else:
                         raise ValueError("Duration must be positive")
                 except ValueError:
@@ -1149,8 +1530,17 @@ class VideoProcessorApp:
             has_error = False
 
             with ThreadPoolExecutor(max_workers=WORKER_PROCESSES) as executor:
-                futures = [executor.submit(self.process_single_video, input_file, selected_videos, output_format, total_tasks, task_count_queue)
-                           for input_file in self.input_files]
+                futures = [
+                    executor.submit(
+                        self.process_single_video,
+                        input_file,
+                        selected_videos,
+                        output_format,
+                        total_tasks,
+                        task_count_queue,
+                    )
+                    for input_file in self.input_files
+                ]
                 for future in futures:
                     result = future.result()
                     if result is None:
@@ -1178,16 +1568,26 @@ class VideoProcessorApp:
 
         ctk.CTkLabel(analytics_window, text="Processing Analytics").pack(pady=10)
         frame = ctk.CTkScrollableFrame(analytics_window)
-        frame.pack(pady=5, fill='both', expand=True)
+        frame.pack(pady=5, fill="both", expand=True)
 
         for data in self.analytics_data:
             file_frame = ctk.CTkFrame(frame)
-            file_frame.pack(fill='x', pady=5)
-            ctk.CTkLabel(file_frame, text=f"File: {data['file']}").pack(side=tk.LEFT, padx=5)
-            ctk.CTkLabel(file_frame, text=f"Duration: {data['duration']}s").pack(side=tk.LEFT, padx=5)
-            ctk.CTkLabel(file_frame, text=f"Frames: {data['frames_processed']}").pack(side=tk.LEFT, padx=5)
-            ctk.CTkLabel(file_frame, text=f"Motion Events: {data['motion_events']}").pack(side=tk.LEFT, padx=5)
-            ctk.CTkLabel(file_frame, text=f"Time: {data['processing_time']:.2f}s").pack(side=tk.LEFT, padx=5)
+            file_frame.pack(fill="x", pady=5)
+            ctk.CTkLabel(file_frame, text=f"File: {data['file']}").pack(
+                side=tk.LEFT, padx=5
+            )
+            ctk.CTkLabel(file_frame, text=f"Duration: {data['duration']}s").pack(
+                side=tk.LEFT, padx=5
+            )
+            ctk.CTkLabel(file_frame, text=f"Frames: {data['frames_processed']}").pack(
+                side=tk.LEFT, padx=5
+            )
+            ctk.CTkLabel(
+                file_frame, text=f"Motion Events: {data['motion_events']}"
+            ).pack(side=tk.LEFT, padx=5)
+            ctk.CTkLabel(file_frame, text=f"Time: {data['processing_time']:.2f}s").pack(
+                side=tk.LEFT, padx=5
+            )
 
         log_session("Displayed analytics dashboard")
 
@@ -1223,8 +1623,12 @@ class VideoProcessorApp:
             progress_value = min(max(progress_value, 0), 100)
             self.progress.set(progress_value / 100)
             remaining_min = remaining / 60 if remaining > 0 else 0
-            self.time_label.configure(text=f"Est. Time Remaining: {remaining_min:.2f} min ({progress_value:.2f}% complete)")
-            log_session(f"UI Update: Progress {progress_value:.2f}%, Est. Time Remaining: {remaining_min:.2f} min")
+            self.time_label.configure(
+                text=f"Est. Time Remaining: {remaining_min:.2f} min ({progress_value:.2f}% complete)"
+            )
+            log_session(
+                f"UI Update: Progress {progress_value:.2f}%, Est. Time Remaining: {remaining_min:.2f} min"
+            )
         elif msg_type == "status":
             status_text = args[0]
             self.current_task_label.configure(text=status_text)
@@ -1243,11 +1647,15 @@ class VideoProcessorApp:
                 widget.destroy()
             for task, file in output_files.items():
                 file_frame = ctk.CTkFrame(self.output_frame)
-                file_frame.pack(fill='x', pady=2)
+                file_frame.pack(fill="x", pady=2)
                 label = ctk.CTkLabel(file_frame, text=f"{task}: {file}")
                 label.pack(side=tk.LEFT, padx=5)
                 upload_button = ctk.CTkButton(file_frame, text="Upload to YouTube")
-                upload_button.configure(command=lambda f=file, t=task, b=upload_button: self.start_upload(f, t, b))
+                upload_button.configure(
+                    command=lambda f=file, t=task, b=upload_button: self.start_upload(
+                        f, t, b
+                    )
+                )
                 upload_button.pack(side=tk.RIGHT, padx=5)
             self.current_task_label.configure(text="Current Task: N/A")
             self.time_label.configure(text=f"Process Complete in {time_str}")
@@ -1283,20 +1691,20 @@ class VideoProcessorApp:
 
     def get_youtube_client(self):
         """Authenticate and return a YouTube API client."""
-        if not hasattr(self, 'youtube_client'):
+        if not hasattr(self, "youtube_client"):
             logging.info("Initializing YouTube client")
             log_session("Initializing YouTube client")
             credentials = None
-            if os.path.exists('token.pickle'):
+            if os.path.exists("token.pickle"):
                 try:
-                    with open('token.pickle', 'rb') as token:
+                    with open("token.pickle", "rb") as token:
                         credentials = pickle.load(token)
                     logging.info("Loaded credentials from token.pickle")
                     log_session("Loaded YouTube credentials from token.pickle")
                 except (pickle.PickleError, EOFError) as e:
                     logging.error(f"Failed to load token.pickle: {str(e)}")
                     log_session(f"Error: Failed to load token.pickle: {str(e)}")
-                    os.remove('token.pickle')
+                    os.remove("token.pickle")
                     credentials = None
             if not credentials or not credentials.valid:
                 if credentials and credentials.expired and credentials.refresh_token:
@@ -1309,31 +1717,37 @@ class VideoProcessorApp:
                         log_session(f"Error: Failed to refresh credentials: {str(e)}")
                         credentials = None
                 if not credentials:
-                    if not os.path.exists('client_secrets.json'):
+                    if not os.path.exists("client_secrets.json"):
                         logging.error("client_secrets.json not found")
                         messagebox.showerror("Error", "client_secrets.json not found.")
-                        log_session("Error: client_secrets.json not found for YouTube authentication")
+                        log_session(
+                            "Error: client_secrets.json not found for YouTube authentication"
+                        )
                         return None
                     try:
                         logging.info("Starting OAuth flow")
                         log_session("Starting OAuth flow")
                         flow = InstalledAppFlow.from_client_secrets_file(
-                            'client_secrets.json',
-                            scopes=['https://www.googleapis.com/auth/youtube.upload']
+                            "client_secrets.json",
+                            scopes=["https://www.googleapis.com/auth/youtube.upload"],
                         )
                         credentials = flow.run_local_server(port=0)
                         logging.info("OAuth authentication completed")
                         log_session("Authenticated with YouTube API")
                     except Exception as e:
                         logging.error(f"Failed to authenticate: {str(e)}")
-                        log_session(f"Error: Failed to authenticate with YouTube API: {str(e)}")
-                        messagebox.showerror("Error", f"Authentication failed: {str(e)}")
+                        log_session(
+                            f"Error: Failed to authenticate with YouTube API: {str(e)}"
+                        )
+                        messagebox.showerror(
+                            "Error", f"Authentication failed: {str(e)}"
+                        )
                         return None
-                with open('token.pickle', 'wb') as token:
+                with open("token.pickle", "wb") as token:
                     pickle.dump(credentials, token)
                     logging.info("Saved credentials to token.pickle")
                     log_session("Saved YouTube credentials to token.pickle")
-            self.youtube_client = build('youtube', 'v3', credentials=credentials)
+            self.youtube_client = build("youtube", "v3", credentials=credentials)
             logging.info("YouTube client initialized successfully")
             log_session("YouTube client initialized")
         return self.youtube_client
@@ -1348,7 +1762,9 @@ class VideoProcessorApp:
         if not validate_video_file(file_path):
             messagebox.showerror("Error", "Invalid or corrupted video file.")
             button.configure(state="normal", text="Upload to YouTube")
-            log_session(f"Error: Invalid or corrupted video file for upload: {file_path}")
+            log_session(
+                f"Error: Invalid or corrupted video file for upload: {file_path}"
+            )
             return
         if not check_network_stability():
             messagebox.showerror("Error", "Network unstable.")
@@ -1356,7 +1772,9 @@ class VideoProcessorApp:
             log_session("Error: Network unstable, cannot upload to YouTube")
             return
         button.configure(state="disabled", text="Uploading...")
-        thread = threading.Thread(target=self.upload_to_youtube, args=(file_path, task_name, button))
+        thread = threading.Thread(
+            target=self.upload_to_youtube, args=(file_path, task_name, button)
+        )
         thread.start()
         logging.info(f"Started upload thread for {file_path}")
         log_session(f"Started YouTube upload for {file_path}")
@@ -1372,25 +1790,41 @@ class VideoProcessorApp:
                 if not youtube:
                     logging.error("YouTube client is None, aborting upload")
                     log_session("Error: Failed to get YouTube client")
-                    self.root.after(0, lambda: messagebox.showerror("Error", "Failed to authenticate with YouTube"))
+                    self.root.after(
+                        0,
+                        lambda: messagebox.showerror(
+                            "Error", "Failed to authenticate with YouTube"
+                        ),
+                    )
                     return
                 logging.info("YouTube client obtained successfully")
                 log_session("YouTube client obtained")
-                
+
                 duration_str = task_name.split()[1]
                 file_name = os.path.splitext(os.path.basename(file_path))[0]
                 title = file_name + (" #shorts" if duration_str == "60s" else "")
-                description = "Uploaded via Bird Box Video Processor" + (" #shorts" if duration_str == "60s" else "")
-                tags = ['bird', 'nature', 'video'] + (['#shorts'] if duration_str == "60s" else [])
+                description = "Uploaded via Bird Box Video Processor" + (
+                    " #shorts" if duration_str == "60s" else ""
+                )
+                tags = ["bird", "nature", "video"] + (
+                    ["#shorts"] if duration_str == "60s" else []
+                )
                 request_body = {
-                    'snippet': {'title': title, 'description': description, 'tags': tags, 'categoryId': '22'},
-                    'status': {'privacyStatus': 'unlisted'}
+                    "snippet": {
+                        "title": title,
+                        "description": description,
+                        "tags": tags,
+                        "categoryId": "22",
+                    },
+                    "status": {"privacyStatus": "unlisted"},
                 }
                 logging.info(f"Preparing to upload {file_path} with title: {title}")
                 log_session(f"Uploading {file_path} with title: {title}")
-                
+
                 media = MediaFileUpload(file_path, resumable=True, chunksize=512 * 1024)
-                request = youtube.videos().insert(part='snippet,status', body=request_body, media_body=media)
+                request = youtube.videos().insert(
+                    part="snippet,status", body=request_body, media_body=media
+                )
                 response = None
                 while response is None:
                     status, response = request.next_chunk()
@@ -1400,18 +1834,38 @@ class VideoProcessorApp:
                         log_session(f"Upload progress: {progress:.2f}%")
                         self.queue.put(("upload_progress", progress))
                 logging.info(f"Upload completed successfully for {file_path}")
-                log_session(f"Upload successful: {file_path}, YouTube URL: https://youtu.be/{response['id']}")
-                self.root.after(0, lambda: messagebox.showinfo("Success", f"Video uploaded: https://youtu.be/{response['id']}"))
+                log_session(
+                    f"Upload successful: {file_path}, YouTube URL: https://youtu.be/{response['id']}"
+                )
+                self.root.after(
+                    0,
+                    lambda: messagebox.showinfo(
+                        "Success", f"Video uploaded: https://youtu.be/{response['id']}"
+                    ),
+                )
                 break
             except Exception as e:
-                logging.error(f"Upload failed on attempt {attempt + 1}: {str(e)}", exc_info=True)
+                logging.error(
+                    f"Upload failed on attempt {attempt + 1}: {str(e)}", exc_info=True
+                )
                 log_session(f"Error: Upload failed on attempt {attempt + 1}: {str(e)}")
                 if attempt == max_retries - 1:
-                    self.root.after(0, lambda: messagebox.showerror("Error", f"Upload failed after {max_retries} attempts: {str(e)}"))
+                    self.root.after(
+                        0,
+                        lambda: messagebox.showerror(
+                            "Error",
+                            f"Upload failed after {max_retries} attempts: {str(e)}",
+                        ),
+                    )
                 else:
                     time.sleep(5)  # Wait before retrying
             finally:
-                self.root.after(0, lambda b=button: b.configure(state="normal", text="Upload to YouTube"))
+                self.root.after(
+                    0,
+                    lambda b=button: b.configure(
+                        state="normal", text="Upload to YouTube"
+                    ),
+                )
                 logging.info(f"Upload attempt {attempt + 1} finalized for {file_path}")
 
     def load_preset(self):
@@ -1436,12 +1890,13 @@ class VideoProcessorApp:
                 "white_threshold": int(self.white_slider.get()),
                 "black_threshold": int(self.black_slider.get()),
                 "clip_limit": float(self.clip_slider.get()),
-                "saturation_multiplier": float(self.saturation_slider.get())
+                "saturation_multiplier": float(self.saturation_slider.get()),
             }
             with open("presets.json", "w") as f:
                 json.dump(self.presets, f)
             self.preset_combobox.configure(values=list(self.presets.keys()))
             log_session(f"Saved preset: {preset_name}")
+
 
 if __name__ == "__main__":
     root = ctk.CTk()
