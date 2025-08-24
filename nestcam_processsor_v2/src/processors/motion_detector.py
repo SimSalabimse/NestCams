@@ -331,12 +331,22 @@ class MotionDetector:
     ) -> float:
         """Calculate motion score using streaming baseline"""
         # Uses running average baseline instead of stored frames
+
         # Calculate histogram for current frame
         hist_current = cv2.calcHist(
             [frame], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256]
         )
         cv2.normalize(hist_current, hist_current, 0, 1, cv2.NORM_MINMAX)
 
+        # Convert baseline_avg to uint8 for histogram calculation
+        baseline_avg_uint8 = baseline_avg.astype(np.uint8)
+
+        # Calculate histogram for baseline
+        hist_baseline = cv2.calcHist(
+            [baseline_avg_uint8], [0, 1, 2], None, [8, 8, 8], [0, 256, 0, 256, 0, 256]
+        )
+        cv2.normalize(hist_baseline, hist_baseline, 0, 1, cv2.NORM_MINMAX)
+
         # Compare histograms
-        similarity = cv2.compareHist(hist_current, baseline_avg, cv2.HISTCMP_CORREL)
+        similarity = cv2.compareHist(hist_current, hist_baseline, cv2.HISTCMP_CORREL)
         return (1.0 - similarity) * 1000  # Convert to motion score
