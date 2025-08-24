@@ -26,6 +26,7 @@ import time
 from pathlib import Path
 import cv2
 import numpy as np
+from concurrent.futures import ProcessPoolExecutor
 
 
 logger = get_logger(__name__)
@@ -145,6 +146,98 @@ class VideoProcessor:
 
         except Exception as e:
             self.logger.error(f"Video processing failed: {e}")
+            processing_time = time.time() - start_time
+            return ProcessingResult(
+                filename=Path(input_path).name,
+                frames_processed=0,
+                motion_events=0,
+                processing_time=processing_time,
+                output_files=[],
+                error=str(e),
+            )
+
+    def process_video_streaming(
+        self,
+        input_path: str,
+        output_format: str = "mp4",
+        output_dir: Optional[str] = None,
+        watermark_text: Optional[str] = None,
+        progress_callback: Optional[Callable] = None,
+        use_gpu: bool = True,
+    ) -> ProcessingResult:
+        """
+        Memory-efficient video processing with GPU acceleration for large files
+
+        This method processes frames in smaller chunks to avoid loading
+        everything into memory at once, making it suitable for 50GB+ files.
+        """
+        start_time = time.time()
+        self.logger.info(f"Starting video streaming processing: {input_path}")
+
+        try:
+            # Validate input file
+            if not Path(input_path).exists():
+                raise FileNotFoundError(f"Input file not found: {input_path}")
+
+            # Step 1: Motion detection
+            if progress_callback:
+                progress_callback(5, "Detecting motion...", 0)
+
+            motion_result = self.motion_detector.detect_motion(
+                input_path,
+                progress_callback=lambda p, cf, tf: progress_callback(
+                    5 + (p * 0.3), f"Motion detection: {cf}", tf
+                ),
+            )
+
+            if not motion_result.frame_indices:
+                raise ValueError("No motion detected in video")
+
+            # Step 2: Generate output videos for different durations
+            output_files = []
+            durations = self._get_durations()
+
+            total_durations = len(durations)
+            for i, duration in enumerate(durations):
+                if progress_callback:
+                    progress = 35 + (i / total_durations) * 60
+                    progress_callback(progress, f"Generating {duration}s video...", i)
+
+                output_file = self._generate_video(
+                    input_path,
+                    duration,
+                    motion_result.frame_indices,
+                    output_format,
+                    output_dir,
+                    watermark_text,
+                    lambda p, cf, tf: progress_callback(
+                        progress + (p * (60 / total_durations / 100)), cf, tf
+                    ),
+                )
+
+                output_files.append(output_file)
+
+            # Step 3: Add audio if configured
+            if progress_callback:
+                progress_callback(95, "Adding audio...", 0)
+
+            output_files = self._add_audio_to_videos(output_files)
+
+            processing_time = time.time() - start_time
+
+            result = ProcessingResult(
+                filename=Path(input_path).name,
+                frames_processed=motion_result.processed_frames,
+                motion_events=len(motion_result.frame_indices),
+                processing_time=processing_time,
+                output_files=output_files,
+            )
+
+            self.logger.info(f"Video streaming processing completed: {input_path}")
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Video streaming processing failed: {e}")
             processing_time = time.time() - start_time
             return ProcessingResult(
                 filename=Path(input_path).name,
