@@ -1,334 +1,417 @@
-#!/bin/bash
-# NestCam Processor v2.0 - Linux Installation Script with Proper Venv Handling
-
-set -e  # Exit on any error
-
-echo "🐦 NestCam Processor v2.0 - Linux Installation"
-echo "==============================================="
-
-# Get the project directory
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENV_DIR="$PROJECT_DIR/nestcam_env"
-
-echo "📂 Project directory: $PROJECT_DIR"
-echo "🌐 Virtual environment: $VENV_DIR"
-
-# Update package list
-echo "🔄 Updating package list..."
-sudo apt update
-
-# Install Python 3.11 and pip
-echo "🐍 Installing Python 3.11..."
-sudo apt install -y python3.11 python3.11-pip python3.11-venv
-
-# Install system dependencies
-echo "📦 Installing system dependencies..."
-sudo apt install -y ffmpeg libsm6 libxext6 libxrender-dev libgomp1 libglib2.0-0
-
-# Clean up existing venv if it exists
-if [ -d "$VENV_DIR" ]; then
-    echo "🧹 Removing existing virtual environment..."
-    rm -rf "$VENV_DIR"
-fi
-
-# Create virtual environment
-echo "🌐 Creating Python virtual environment..."
-python3.11 -m venv "$VENV_DIR"
-
-# Verify venv creation
-if [ ! -f "$VENV_DIR/bin/activate" ]; then
-    echo "❌ Failed to create virtual environment"
-    exit 1
-fi
-
-# Activate virtual environment
-echo "🔗 Activating virtual environment..."
-source "$VENV_DIR/bin/activate"
-
-# Verify we're in venv
-if [[ "$VIRTUAL_ENV" != "$VENV_DIR" ]]; then
-    echo "❌ Failed to activate virtual environment"
-    exit 1
-fi
-
-echo "✅ Virtual environment activated: $VIRTUAL_ENV"
-
-# Upgrade pip within venv
-echo "⬆️ Upgrading pip..."
-pip install --upgrade pip
-
-# Install PyTorch (CPU version for Linux)
-echo "🔥 Installing PyTorch..."
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-
-# Install project dependencies
-echo "📚 Installing project dependencies..."
-pip install -r "$PROJECT_DIR/requirements.txt"
-
-# Test installation
-echo "🧪 Testing installation..."
-python -c "
-import sys
-print(f'Python version: {sys.version}')
-try:
-    import torch
-    print(f'PyTorch version: {torch.__version__}')
-    import cv2
-    print('OpenCV available')
-    import streamlit
-    print('Streamlit available')
-    print('✅ All dependencies installed successfully')
-except Exception as e:
-    print(f'❌ Installation test failed: {e}')
-    sys.exit(1)
-"
-
-echo ""
-echo "✅ Installation complete!"
-echo ""
-echo "🚀 To run the application:"
-echo "   cd \"$PROJECT_DIR\""
-echo "   source \"$VENV_DIR/bin/activate\""
-echo "   python -m src.main --web"
-echo ""
-echo "📝 To deactivate the virtual environment later:"
-echo "   deactivate"
-```
-
----
-
-## 3. Windows Install Script
-
-**Replace the entire file with this improved version:**
-
-```powershell
-<code_block_to_apply_changes_from>
-# NestCam Processor v2.0 - Windows Installation Script with Proper Venv Handling
+# NestCam Processor v2.0 - Windows Installation Script with Verbose Output
 
 param(
-    [switch]$CleanInstall = $false
+    [switch]$CleanInstall = $false,
+    [switch]$Verbose = $true,
+    [switch]$SkipTests = $false
 )
 
-Write-Host "🐦 NestCam Processor v2.0 - Windows Installation" -ForegroundColor Green
-Write-Host "================================================" -ForegroundColor Green
+# Configuration
+$Config = @{
+    PythonVersion = "3.11.8"
+    PythonUrl = "https://www.python.org/ftp/python/3.11.8/python-3.11.8-amd64.exe"
+    FFmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+    TempDir = $env:TEMP
+    LogFile = "$PSScriptRoot\install_log.txt"
+}
 
-# Get the project directory
-$PROJECT_DIR = Split-Path -Parent $PSCommandPath
+# Start logging
+Start-Transcript -Path $Config.LogFile -Append
+Write-Host "📝 Installation log: $($Config.LogFile)" -ForegroundColor Cyan
+
+function Write-Step {
+    param([string]$Message)
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    Write-Host "[$timestamp] $Message" -ForegroundColor Green
+    Write-Host ""
+}
+
+function Write-SubStep {
+    param([string]$Message)
+    Write-Host "  → $Message" -ForegroundColor Yellow
+}
+
+function Write-Success {
+    param([string]$Message)
+    Write-Host "  ✅ $Message" -ForegroundColor Green
+}
+
+function Write-Error {
+    param([string]$Message)
+    Write-Host "  ❌ $Message" -ForegroundColor Red
+}
+
+function Write-Info {
+    param([string]$Message)
+    if ($Verbose) {
+        Write-Host "  ℹ️  $Message" -ForegroundColor Blue
+    }
+}
+
+function Test-Command {
+    param([string]$Command)
+    try {
+        Get-Command $Command -ErrorAction Stop
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+# Header
+Write-Step "🐦 NestCam Processor v2.0 - Windows Installation"
+Write-Host "================================================" -ForegroundColor Green
+Write-Host ""
+
+# Get project directory
+$PROJECT_DIR = $PSScriptRoot
 $VENV_DIR = Join-Path $PROJECT_DIR "nestcam_env"
 
-Write-Host "📂 Project directory: $PROJECT_DIR" -ForegroundColor Cyan
-Write-Host "🌐 Virtual environment: $VENV_DIR" -ForegroundColor Cyan
+Write-Info "📂 Project directory: $PROJECT_DIR"
+Write-Info "🌐 Virtual environment will be: $VENV_DIR"
+Write-Info "📝 Log file: $($Config.LogFile)"
 
-# Function to check if command exists
-function Test-Command {
-    param($Command)
-    return Get-Command $Command -ErrorAction SilentlyContinue
-}
+# Check Windows version
+$osInfo = Get-ComputerInfo
+Write-Info "🖥️  Windows version: $($osInfo.WindowsProductName) $($osInfo.WindowsVersion)"
+Write-Info "🔧 PowerShell version: $($PSVersionTable.PSVersion)"
 
-# Check if Python 3.11 is installed
-$python311 = Test-Command python3.11
-if (-not $python311) {
-    Write-Host "🐍 Installing Python 3.11..." -ForegroundColor Yellow
+# Check if running as administrator
+$currentUser = [Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = New-Object Security.Principal.WindowsPrincipal($currentUser)
+$isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
-    # Download and install Python 3.11
-    $pythonUrl = "https://www.python.org/ftp/python/3.11.8/python-3.11.8-amd64.exe"
-    $installerPath = "$env:TEMP\python311.exe"
-
-    try {
-        Write-Host "Downloading Python 3.11..." -ForegroundColor Yellow
-        Invoke-WebRequest -Uri $pythonUrl -OutFile $installerPath -UseBasicParsing
-
-        Write-Host "Installing Python 3.11..." -ForegroundColor Yellow
-        Start-Process -FilePath $installerPath -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 Include_pip=1 Include_venv=1" -Wait -NoNewWindow
-
-        # Refresh PATH
-        $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
-
-        Remove-Item $installerPath -ErrorAction SilentlyContinue
-    } catch {
-        Write-Host "❌ Failed to install Python 3.11: $_" -ForegroundColor Red
+if (-not $isAdmin) {
+    Write-Step "⚠️  Administrator privileges required for installation"
+    Write-Info "Some installation steps require admin rights (Python, ffmpeg)"
+    $adminChoice = Read-Host "Do you want to continue without admin rights? (y/N)"
+    if ($adminChoice -notmatch "^[Yy]") {
+        Write-Error "Installation cancelled - administrator rights required"
+        Stop-Transcript
         exit 1
     }
-} else {
-    Write-Host "✅ Python 3.11 already installed" -ForegroundColor Green
 }
 
-# Install ffmpeg
-Write-Host "🎬 Installing ffmpeg..." -ForegroundColor Yellow
+# Step 1: Check Python installation
+Write-Step "🐍 Checking Python installation"
+
+$python311 = Test-Command "python3.11"
+$python = Test-Command "python"
+
+if ($python311) {
+    $pythonVersion = & python3.11 --version
+    Write-Success "Python 3.11 found: $pythonVersion"
+} elseif ($python) {
+    $pythonVersion = & python --version
+    Write-Info "Python found: $pythonVersion"
+    
+    if ($pythonVersion -match "Python 3\.11") {
+        Write-Success "Compatible Python version found"
+        $python311 = $true
+    } else {
+        Write-Info "Python version may not be compatible, will install Python 3.11"
+    }
+} else {
+    Write-Info "Python 3.11 not found, will install it"
+}
+
+# Install Python if needed
+if (-not $python311) {
+    Write-Step "📦 Installing Python 3.11"
+    
+    try {
+        $installerPath = Join-Path $Config.TempDir "python311.exe"
+        
+        Write-SubStep "Downloading Python 3.11..."
+        Invoke-WebRequest -Uri $Config.PythonUrl -OutFile $installerPath -UseBasicParsing
+        
+        Write-SubStep "Installing Python 3.11 (this may take a few minutes)..."
+        Write-Info "Installation arguments: /quiet InstallAllUsers=1 PrependPath=1 Include_pip=1 Include_venv=1"
+        
+        $process = Start-Process -FilePath $installerPath -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 Include_pip=1 Include_venv=1" -Wait -PassThru
+        
+        if ($process.ExitCode -eq 0) {
+            Write-Success "Python 3.11 installed successfully"
+        } else {
+            Write-Error "Python installation failed with exit code: $($process.ExitCode)"
+            throw "Python installation failed"
+        }
+        
+        # Refresh PATH
+        $env:PATH = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+        
+        # Clean up
+        Remove-Item $installerPath -ErrorAction SilentlyContinue
+        
+    } catch {
+        Write-Error "Failed to install Python 3.11: $_"
+        Write-Info "You can download Python manually from: https://www.python.org/downloads/"
+        throw
+    }
+}
+
+# Verify Python installation
+Write-SubStep "Verifying Python installation..."
 try {
-    # Download ffmpeg
-    $ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-    $ffmpegZip = "$env:TEMP\ffmpeg.zip"
-    $ffmpegDir = "$env:TEMP\ffmpeg"
+    $pythonVersion = & python3.11 --version 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Success "Python 3.11 verified: $pythonVersion"
+    } else {
+        throw "Python verification failed"
+    }
+} catch {
+    Write-Error "Python verification failed: $_"
+    throw
+}
 
-    Write-Host "Downloading ffmpeg..." -ForegroundColor Yellow
-    Invoke-WebRequest -Uri $ffmpegUrl -OutFile $ffmpegZip -UseBasicParsing
+# Step 2: Install ffmpeg
+Write-Step "🎬 Installing ffmpeg"
 
-    Write-Host "Extracting ffmpeg..." -ForegroundColor Yellow
+try {
+    $ffmpegZip = Join-Path $Config.TempDir "ffmpeg.zip"
+    $ffmpegDir = Join-Path $Config.TempDir "ffmpeg"
+    
+    Write-SubStep "Downloading ffmpeg..."
+    Invoke-WebRequest -Uri $Config.FFmpegUrl -OutFile $ffmpegZip -UseBasicParsing
+    
+    Write-SubStep "Extracting ffmpeg..."
     if (Test-Path $ffmpegDir) {
         Remove-Item $ffmpegDir -Recurse -Force
     }
     Expand-Archive -Path $ffmpegZip -DestinationPath $ffmpegDir
-
+    
     # Find ffmpeg executable
-    $ffmpegPath = Get-ChildItem -Path $ffmpegDir -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
+    $ffmpegPath = Get-ChildItem -Path $ffmpegDir -Recurse -Filter "ffmpeg.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($ffmpegPath) {
         $ffmpegBinDir = Split-Path $ffmpegPath.FullName -Parent
-        Write-Host "Adding ffmpeg to PATH: $ffmpegBinDir" -ForegroundColor Yellow
+        Write-Info "ffmpeg found at: $ffmpegBinDir"
+        
+        # Add to current session PATH
         $env:PATH += ";$ffmpegBinDir"
+        
+        # Test ffmpeg
+        $ffmpegVersion = & ffmpeg -version 2>&1 | Select-Object -First 1
+        Write-Success "ffmpeg installed: $ffmpegVersion"
+    } else {
+        throw "ffmpeg.exe not found after extraction"
     }
-
+    
+    # Clean up
     Remove-Item $ffmpegZip -ErrorAction SilentlyContinue
+    
 } catch {
-    Write-Host "⚠️ Failed to install ffmpeg automatically. Please install it manually." -ForegroundColor Yellow
-    Write-Host "Visit: https://ffmpeg.org/download.html" -ForegroundColor Yellow
+    Write-Error "Failed to install ffmpeg automatically: $_"
+    Write-Info "Please install ffmpeg manually:"
+    Write-Info "1. Visit: https://ffmpeg.org/download.html"
+    Write-Info "2. Download the Windows build"
+    Write-Info "3. Add ffmpeg.exe to your system PATH"
 }
 
-# Clean up existing venv if requested or if it exists
+# Step 3: Clean up existing virtual environment
 if ($CleanInstall -or (Test-Path $VENV_DIR)) {
+    Write-Step "🧹 Managing existing virtual environment"
+    
     if (Test-Path $VENV_DIR) {
-        Write-Host "🧹 Removing existing virtual environment..." -ForegroundColor Yellow
-        Remove-Item $VENV_DIR -Recurse -Force
+        Write-SubStep "Removing existing virtual environment..."
+        try {
+            Remove-Item $VENV_DIR -Recurse -Force
+            Write-Success "Existing virtual environment removed"
+        } catch {
+            Write-Error "Failed to remove existing virtual environment: $_"
+            throw
+        }
     }
 }
 
-# Create virtual environment
-Write-Host "🌐 Creating Python virtual environment..." -ForegroundColor Yellow
+# Step 4: Create virtual environment
+Write-Step "🌐 Creating Python virtual environment"
+
 try {
-    & python3.11 -m venv $VENV_DIR
+    Write-SubStep "Creating virtual environment at: $VENV_DIR"
+    $venvProcess = Start-Process -FilePath "python3.11" -ArgumentList "-m", "venv", $VENV_DIR -Wait -PassThru -NoNewWindow
+    
+    if ($venvProcess.ExitCode -eq 0) {
+        Write-Success "Virtual environment created successfully"
+    } else {
+        throw "Virtual environment creation failed with exit code: $($venvProcess.ExitCode)"
+    }
+    
 } catch {
-    Write-Host "❌ Failed to create virtual environment: $_" -ForegroundColor Red
-    exit 1
+    Write-Error "Failed to create virtual environment: $_"
+    throw
 }
 
 # Verify venv creation
 $activateScript = Join-Path $VENV_DIR "Scripts\activate.ps1"
 if (-not (Test-Path $activateScript)) {
-    Write-Host "❌ Virtual environment creation failed - activate script not found" -ForegroundColor Red
-    exit 1
+    Write-Error "Virtual environment creation failed - activate script not found at: $activateScript"
+    throw "Virtual environment creation failed"
 }
 
-# Activate virtual environment
-Write-Host "🔗 Activating virtual environment..." -ForegroundColor Yellow
+# Step 5: Activate virtual environment
+Write-Step "🔗 Activating virtual environment"
+
 try {
+    Write-SubStep "Running activation script..."
     & $activateScript
+    
+    # Verify activation
+    if ($env:VIRTUAL_ENV) {
+        Write-Success "Virtual environment activated: $env:VIRTUAL_ENV"
+    } else {
+        throw "Virtual environment activation failed - VIRTUAL_ENV not set"
+    }
+    
 } catch {
-    Write-Host "❌ Failed to activate virtual environment: $_" -ForegroundColor Red
-    exit 1
+    Write-Error "Failed to activate virtual environment: $_"
+    throw
 }
 
-# Verify we're in venv
-if (-not $env:VIRTUAL_ENV) {
-    Write-Host "❌ Virtual environment activation failed" -ForegroundColor Red
-    exit 1
-}
+# Step 6: Upgrade pip
+Write-Step "⬆️ Upgrading pip"
 
-Write-Host "✅ Virtual environment activated: $env:VIRTUAL_ENV" -ForegroundColor Green
-
-# Upgrade pip
-Write-Host "⬆️ Upgrading pip..." -ForegroundColor Yellow
 try {
-    & python -m pip install --upgrade pip
+    Write-SubStep "Upgrading pip in virtual environment..."
+    $pipUpgrade = Start-Process -FilePath "python" -ArgumentList "-m", "pip", "install", "--upgrade", "pip" -Wait -PassThru -NoNewWindow
+    
+    if ($pipUpgrade.ExitCode -eq 0) {
+        $pipVersion = & pip --version
+        Write-Success "pip upgraded successfully: $pipVersion"
+    } else {
+        Write-Error "pip upgrade failed with exit code: $($pipUpgrade.ExitCode)"
+        throw "pip upgrade failed"
+    }
+    
 } catch {
-    Write-Host "❌ Failed to upgrade pip: $_" -ForegroundColor Red
+    Write-Error "Failed to upgrade pip: $_"
+    throw
 }
 
-# Install PyTorch with CUDA support (if NVIDIA GPU is available)
-Write-Host "🔥 Installing PyTorch..." -ForegroundColor Yellow
-$nvidia = Get-WmiObject -Query "SELECT * FROM Win32_VideoController WHERE Name LIKE '%NVIDIA%'" -ErrorAction SilentlyContinue
-if ($nvidia) {
-    Write-Host "🎯 NVIDIA GPU detected, installing CUDA version..." -ForegroundColor Green
-    & pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-} else {
-    Write-Host "📺 No NVIDIA GPU detected, installing CPU version..." -ForegroundColor Yellow
-    & pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-}
+# Step 7: Install PyTorch
+Write-Step "🔥 Installing PyTorch"
 
-# Install project dependencies
-Write-Host "📚 Installing project dependencies..." -ForegroundColor Yellow
 try {
-    & pip install -r "$PROJECT_DIR\requirements.txt"
+    # Check for NVIDIA GPU
+    Write-SubStep "Checking for NVIDIA GPU..."
+    $nvidia = Get-WmiObject -Query "SELECT * FROM Win32_VideoController WHERE Name LIKE '%NVIDIA%'" -ErrorAction SilentlyContinue
+    
+    if ($nvidia) {
+        Write-Info "🎯 NVIDIA GPU detected: $($nvidia.Name)"
+        Write-SubStep "Installing PyTorch with CUDA support..."
+        $torchArgs = "install", "torch", "torchvision", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cu118"
+    } else {
+        Write-Info "📺 No NVIDIA GPU detected, installing CPU version"
+        Write-SubStep "Installing PyTorch CPU version..."
+        $torchArgs = "install", "torch", "torchvision", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cpu"
+    }
+    
+    $torchInstall = Start-Process -FilePath "pip" -ArgumentList $torchArgs -Wait -PassThru -NoNewWindow
+    
+    if ($torchInstall.ExitCode -eq 0) {
+        Write-Success "PyTorch installed successfully"
+    } else {
+        Write-Error "PyTorch installation failed with exit code: $($torchInstall.ExitCode)"
+        throw "PyTorch installation failed"
+    }
+    
 } catch {
-    Write-Host "❌ Failed to install dependencies: $_" -ForegroundColor Red
-    exit 1
+    Write-Error "Failed to install PyTorch: $_"
+    throw
 }
 
-# Test installation
-Write-Host "🧪 Testing installation..." -ForegroundColor Yellow
+# Step 8: Install project dependencies
+Write-Step "📚 Installing project dependencies"
+
 try {
-    & python -c "
+    Write-SubStep "Installing dependencies from requirements.txt..."
+    $depsInstall = Start-Process -FilePath "pip" -ArgumentList "install", "-r", "$PROJECT_DIR\requirements.txt" -Wait -PassThru -NoNewWindow
+    
+    if ($depsInstall.ExitCode -eq 0) {
+        Write-Success "Project dependencies installed successfully"
+    } else {
+        Write-Error "Dependencies installation failed with exit code: $($depsInstall.ExitCode)"
+        throw "Dependencies installation failed"
+    }
+    
+} catch {
+    Write-Error "Failed to install project dependencies: $_"
+    throw
+}
+
+# Step 9: Test installation
+if (-not $SkipTests) {
+    Write-Step "🧪 Testing installation"
+    
+    try {
+        Write-SubStep "Testing Python imports..."
+        
+        $testScript = @"
 import sys
 print(f'Python version: {sys.version}')
-try:
-    import torch
-    print(f'PyTorch version: {torch.__version__}')
-    import cv2
-    print('OpenCV available')
-    import streamlit
-    print('Streamlit available')
-    print('✅ All dependencies installed successfully')
-except Exception as e:
-    print(f'❌ Installation test failed: {e}')
+
+# Test core dependencies
+deps_to_test = [
+    ('torch', 'PyTorch'),
+    ('cv2', 'OpenCV'),
+    ('streamlit', 'Streamlit'),
+    ('numpy', 'NumPy'),
+    ('pandas', 'Pandas'),
+    ('plotly', 'Plotly'),
+    ('psutil', 'psutil'),
+]
+
+failed_deps = []
+for module, name in deps_to_test:
+    try:
+        __import__(module)
+        print(f'✅ {name} available')
+    except ImportError as e:
+        print(f'❌ {name} failed: {e}')
+        failed_deps.append((module, name))
+
+if failed_deps:
+    print(f'\n❌ {len(failed_deps)} dependencies failed to import')
+    for module, name in failed_deps:
+        print(f'  - {name} ({module})')
     sys.exit(1)
-"
-} catch {
-    Write-Host "❌ Installation test failed: $_" -ForegroundColor Red
+else:
+    print('\n✅ All dependencies imported successfully')
+"@
+
+        $testResult = $testScript | & python
+        
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "Installation test completed successfully"
+            Write-Info "All core dependencies are working"
+        } else {
+            Write-Error "Installation test failed"
+            Write-Info "Check the log file for detailed error information"
+            throw "Installation test failed"
+        }
+        
+    } catch {
+        Write-Error "Installation test failed: $_"
+        throw
+    }
+} else {
+    Write-Info "Skipping installation tests (-SkipTests parameter used)"
 }
 
-Write-Host ""
-Write-Host "✅ Installation complete!" -ForegroundColor Green
-Write-Host ""
-Write-Host "🚀 To run the application:" -ForegroundColor Cyan
-Write-Host "   cd `"$PROJECT_DIR`"" -ForegroundColor White
-Write-Host "   & `"$VENV_DIR\Scripts\activate.ps1`"" -ForegroundColor White
-Write-Host "   python -m src.main --web" -ForegroundColor White
-Write-Host ""
-Write-Host "📝 To deactivate the virtual environment later:" -ForegroundColor Cyan
-Write-Host "   deactivate" -ForegroundColor White
-```
+# Step 10: Create activation helper script
+Write-Step "📝 Creating helper scripts"
 
----
+try {
+    $activateHelper = @'
+# NestCam Processor v2.0 - Virtual Environment Activator
 
-## 4. Create a Helper Script for Easy Activation
-
-**Create this new file: `activate_venv.sh`** (for Mac/Linux):
-```bash
-#!/bin/bash
-# Helper script to activate the NestCam virtual environment
-
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENV_DIR="$PROJECT_DIR/nestcam_env"
-
-if [ ! -d "$VENV_DIR" ]; then
-    echo "❌ Virtual environment not found!"
-    echo "Please run the installation script first:"
-    echo "   ./install_mac.sh  (on Mac)"
-    echo "   ./install_linux.sh  (on Linux)"
-    exit 1
-fi
-
-echo "🔗 Activating NestCam virtual environment..."
-source "$VENV_DIR/bin/activate"
-
-if [[ "$VIRTUAL_ENV" == "$VENV_DIR" ]]; then
-    echo "✅ Virtual environment activated: $VIRTUAL_ENV"
-    echo ""
-    echo "🚀 To run the application:"
-    echo "   python -m src.main --web"
-    echo ""
-    echo "📝 To deactivate later: deactivate"
-else
-    echo "❌ Failed to activate virtual environment"
-    exit 1
-fi
-```
-
-**Create this new file: `activate_venv.ps1`** (for Windows):
-```powershell
-# Helper script to activate the NestCam virtual environment
+param(
+    [switch]$RunApp = $false
+)
 
 $PROJECT_DIR = Split-Path -Parent $PSCommandPath
 $VENV_DIR = Join-Path $PROJECT_DIR "nestcam_env"
+
+Write-Host "🔗 Activating NestCam virtual environment..." -ForegroundColor Yellow
 
 if (-not (Test-Path $VENV_DIR)) {
     Write-Host "❌ Virtual environment not found!" -ForegroundColor Red
@@ -337,73 +420,56 @@ if (-not (Test-Path $VENV_DIR)) {
     exit 1
 }
 
-Write-Host "🔗 Activating NestCam virtual environment..." -ForegroundColor Yellow
 & "$VENV_DIR\Scripts\activate.ps1"
 
 if ($env:VIRTUAL_ENV) {
     Write-Host "✅ Virtual environment activated: $env:VIRTUAL_ENV" -ForegroundColor Green
     Write-Host ""
-    Write-Host "🚀 To run the application:" -ForegroundColor Cyan
-    Write-Host "   python -m src.main --web" -ForegroundColor White
-    Write-Host ""
-    Write-Host "📝 To deactivate later: deactivate" -ForegroundColor Cyan
+    
+    if ($RunApp) {
+        Write-Host "🚀 Starting NestCam Processor..." -ForegroundColor Cyan
+        python -m src.main --web
+    } else {
+        Write-Host "🚀 To run the application:" -ForegroundColor Cyan
+        Write-Host "   python -m src.main --web" -ForegroundColor White
+        Write-Host ""
+        Write-Host "📝 To deactivate later:" -ForegroundColor Cyan
+        Write-Host "   deactivate" -ForegroundColor White
+    }
 } else {
     Write-Host "❌ Failed to activate virtual environment" -ForegroundColor Red
     exit 1
 }
-```
+'@
 
----
+    $activateHelper | Out-File -FilePath "$PROJECT_DIR\activate_venv.ps1" -Encoding UTF8
+    Write-Success "Helper script created: activate_venv.ps1"
+    
+} catch {
+    Write-Error "Failed to create helper script: $_"
+}
 
-## How to Use the Improved Install Scripts:
+# Final summary
+Write-Step "🎉 Installation Complete!"
 
-### Mac:
-```bash
-# Make scripts executable
-chmod +x install_mac.sh
-chmod +x activate_venv.sh
+Write-Host ""
+Write-Host "📋 Installation Summary:" -ForegroundColor Cyan
+Write-Host "  📂 Project directory: $PROJECT_DIR" -ForegroundColor White
+Write-Host "  🌐 Virtual environment: $VENV_DIR" -ForegroundColor White
+Write-Host "  📝 Log file: $($Config.LogFile)" -ForegroundColor White
+Write-Host "  🛠️  Helper script: .\activate_venv.ps1" -ForegroundColor White
 
-# Run installation
-./install_mac.sh
+Write-Host ""
+Write-Host "🚀 How to run NestCam Processor:" -ForegroundColor Cyan
+Write-Host "  Option 1 - Use helper script:" -ForegroundColor White
+Write-Host "    .\activate_venv.ps1 -RunApp" -ForegroundColor Gray
+Write-Host ""
+Write-Host "  Option 2 - Manual activation:" -ForegroundColor White
+Write-Host "    .\activate_venv.ps1" -ForegroundColor Gray
+Write-Host "    python -m src.main --web" -ForegroundColor Gray
 
-# Later, to activate venv and run
-./activate_venv.sh
-python -m src.main --web
-```
+Write-Host ""
+Write-Host "📚 For detailed documentation, see: README.md" -ForegroundColor Cyan
+Write-Host "🆘 For help, check the troubleshooting section in README.md" -ForegroundColor Cyan
 
-### Linux:
-```bash
-# Make scripts executable
-chmod +x install_linux.sh
-chmod +x activate_venv.sh
-
-# Run installation
-./install_linux.sh
-
-# Later, to activate venv and run
-./activate_venv.sh
-python -m src.main --web
-```
-
-### Windows:
-```powershell
-# Run installation (with clean install if needed)
-.\install_windows.ps1 -CleanInstall
-
-# Later, to activate venv and run
-.\activate_venv.ps1
-python -m src.main --web
-```
-
-## Key Improvements Made:
-
-1. **Proper Venv Handling**: All scripts now properly create, verify, and activate virtual environments
-2. **Error Checking**: Added comprehensive error checking and validation
-3. **Path Resolution**: Scripts automatically detect the correct project directory
-4. **Clean Installation**: Option to clean existing venv before installation
-5. **Installation Testing**: Scripts test that all dependencies are properly installed
-6. **Helper Scripts**: Easy-to-use activation scripts for daily use
-7. **Cross-Platform**: Consistent behavior across Mac, Linux, and Windows
-8. **Better Instructions**: Clear instructions for activation and running the application
-
-The scripts now ensure that all installations happen within the virtual environment, preventing system-wide package conflicts and ensuring consistent behavior across different platforms.
+Stop-Transcript
