@@ -114,3 +114,37 @@ echo ""
 echo "🔧 If GPU acceleration doesn't work, try:"
 echo "   source \"$VENV_DIR/bin/activate\""
 echo "   pip install --upgrade torch torchvision --pre --index-url https://download.pytorch.org/whl/nightly/cpu"
+
+# Create helper activation script
+echo "📝 Creating activation helper script..."
+cat > "$PROJECT_DIR/activate.sh" << 'EOF'
+#!/bin/bash
+# NestCam Processor v2.0 - Quick Activation Script
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV_DIR="$PROJECT_DIR/nestcam_env"
+
+if [ ! -d "$VENV_DIR" ]; then
+    echo "❌ Virtual environment not found!"
+    echo "Please run the installation script first:"
+    echo "   ./install_mac.sh"
+    exit 1
+fi
+
+echo "🔗 Activating NestCam virtual environment..."
+source "$VENV_DIR/bin/activate"
+
+if [[ "$VIRTUAL_ENV" == "$VENV_DIR" ]]; then
+    echo "✅ Virtual environment activated: $VIRTUAL_ENV"
+    echo ""
+    echo "🚀 To run the application:"
+    echo "   python -m src.main --web"
+    echo ""
+    echo "📝 To deactivate later: deactivate"
+else
+    echo "❌ Failed to activate virtual environment"
+    exit 1
+fi
+EOF
+
+chmod +x "$PROJECT_DIR/activate.sh"

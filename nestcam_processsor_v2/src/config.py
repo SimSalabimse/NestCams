@@ -16,10 +16,41 @@ from concurrent.futures import ProcessPoolExecutor
 import tempfile
 import shutil
 import time
-from processors.video_processor import ProcessingResult  # Add this import
+
+# Handle import for ProcessingResult with fallback
+try:
+    from processors.video_processor import ProcessingResult
+except ImportError:
+    try:
+        from .processors.video_processor import ProcessingResult
+    except ImportError:
+        # Define a minimal ProcessingResult if import fails
+        from dataclasses import dataclass
+        from typing import List, Optional
+
+        @dataclass
+        class ProcessingResult:
+            filename: str
+            frames_processed: int
+            motion_events: int
+            processing_time: float
+            output_files: List[str]
+            error: Optional[str] = None
+
 
 # Load environment variables
 load_dotenv()
+
+# Get project root directory
+PROJECT_ROOT = Path(__file__).parent.parent
+
+# Setup data directories
+DATA_DIR = PROJECT_ROOT / "data"
+LOGS_DIR = PROJECT_ROOT / "logs"
+
+# Create directories if they don't exist
+DATA_DIR.mkdir(exist_ok=True)
+LOGS_DIR.mkdir(exist_ok=True)
 
 # GPU Support (CUDA for 4070ti)
 import platform

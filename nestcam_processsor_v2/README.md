@@ -65,7 +65,7 @@ Advanced Bird Nest Video Processing with GPU acceleration and AI-powered motion 
 
 ```bash
 # 1. Create virtual environment
-python3.11 -m venv nestcam_env
+python -m venv nestcam_env
 
 # 2. Activate environment
 source nestcam_env/bin/activate  # Mac/Linux

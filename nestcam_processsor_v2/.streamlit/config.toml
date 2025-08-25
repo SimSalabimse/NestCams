@@ -1,7 +1,7 @@
 [server]
 maxUploadSize = 102400
 maxMessageSize = 102400
-maxUploadSizePerFile = 102400
+maxFileSize = 102400
 
 [client]
 showSidebarNavigation = true

@@ -84,7 +84,7 @@ try:
     # Enhanced Metal detection for Mac
     elif IS_MAC:
         try:
-            if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
                 HAS_METAL = True
                 GPU_BACKEND = "metal"
                 print("✅ Apple Silicon GPU detected (Metal)")
@@ -99,7 +99,9 @@ try:
 
             else:
                 print("⚠️ Metal not available, falling back to CPU")
-                print("   💡 Try: pip install --upgrade torch torchvision --pre --index-url https://download.pytorch.org/whl/nightly/cpu")
+                print(
+                    "   💡 Try: pip install --upgrade torch torchvision --pre --index-url https://download.pytorch.org/whl/nightly/cpu"
+                )
                 GPU_BACKEND = "cpu"
         except Exception as e:
             print(f"⚠️ Metal initialization failed: {e}")
@@ -1796,7 +1798,9 @@ class NestCamApp:
                             st.session_state.confirm_delete_all = True
 
                         if st.session_state.confirm_delete_all:
-                            st.warning("⚠️ Are you sure you want to delete ALL saved states?")
+                            st.warning(
+                                "⚠️ Are you sure you want to delete ALL saved states?"
+                            )
                             col1, col2 = st.columns(2)
                             with col1:
                                 if st.button("✅ Yes, Delete All", type="primary"):
@@ -1807,7 +1811,9 @@ class NestCamApp:
                                                 state_file.unlink()
                                                 deleted_count += 1
 
-                                        st.success(f"✅ Deleted {deleted_count} saved state(s)!")
+                                        st.success(
+                                            f"✅ Deleted {deleted_count} saved state(s)!"
+                                        )
                                         st.session_state.confirm_delete_all = False
 
                                         # Force UI refresh
@@ -1822,9 +1828,94 @@ class NestCamApp:
                                 if st.button("❌ Cancel"):
                                     st.session_state.confirm_delete_all = False
                                     st.rerun()
-                                else:
-                                    if st.button("🗑️ Delete",
-                                               key=delete_key,
-                                               type="secondary"):
-                                        st.session_state[confirm_key] = True
-                                        st.rerun()
+                else:
+                    st.info("📂 State directory is empty")
+
+        # Performance Tips
+        st.divider()
+        st.subheader("🚀 Performance Optimization Tips")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.markdown("**🎯 General Tips**")
+            tips = [
+                "✅ Use GPU acceleration for 2-5x speed improvement",
+                "✅ Enable memory-efficient mode for large files",
+                "✅ Disable detailed analysis for faster processing",
+                "✅ Choose appropriate context window size",
+                "✅ Use appropriate motion threshold values",
+            ]
+            for tip in tips:
+                st.write(tip)
+
+        with col2:
+            st.markdown("**⚡ Platform-Specific Tips**")
+
+            if IS_MAC:
+                tips = [
+                    "🍎 Metal GPU acceleration available",
+                    "🍎 Use PyTorch nightly for best Metal support",
+                    "🍎 Consider reducing context window on older Macs",
+                    "🍎 Monitor Activity Monitor for resource usage",
+                ]
+            elif IS_WINDOWS:
+                tips = [
+                    "🖥️ NVIDIA CUDA acceleration recommended",
+                    "🖥️ Install PyTorch with CUDA support",
+                    "🖥️ Monitor GPU usage in Task Manager",
+                    "🖥️ Consider reducing batch sizes if GPU memory limited",
+                ]
+            else:
+                tips = [
+                    "🐧 CPU processing is primary option",
+                    "🐧 Consider GPU acceleration if available",
+                    "🐧 Monitor system resources during processing",
+                    "🐧 Adjust worker processes based on CPU cores",
+                ]
+
+            for tip in tips:
+                st.write(tip)
+
+        # Current Configuration
+        st.divider()
+        st.subheader("⚙️ Current Configuration Summary")
+
+        st.markdown("**Motion Detection Settings:**")
+        st.write(
+            f"- Use Detailed Analysis: {getattr(config.processing, 'use_detailed_analysis', True)}"
+        )
+        st.write(
+            f"- Detail Level: {getattr(config.processing, 'detail_level', 'normal')}"
+        )
+        st.write(
+            f"- Context Window: {getattr(config.processing, 'context_window_size', 3)} frames"
+        )
+        st.write(
+            f"- Motion Threshold: {getattr(config.processing, 'motion_threshold', 3000)}"
+        )
+
+        st.markdown("**Performance Settings:**")
+        st.write(f"- GPU Backend: {GPU_BACKEND.upper()}")
+        st.write(f"- Memory-Efficient Mode: Default enabled")
+        st.write(
+            f"- Resume Functionality: {getattr(config.processing, 'enable_resume', True)}"
+        )
+
+        st.markdown("**Audio Settings:**")
+        st.write(f"- Audio Processing: {getattr(config.audio, 'enable_audio', True)}")
+        st.write(f"- Volume: {getattr(config.audio, 'volume', 1.0)}")
+
+        # Refresh button
+        if st.button("🔄 Refresh System Info"):
+            st.rerun()
+
+
+def main():
+    """Main entry point for the web application"""
+    app = NestCamApp()
+    app.run()
+
+
+if __name__ == "__main__":
+    main()
