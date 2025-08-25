@@ -41,19 +41,44 @@ try:
         HAS_CUDA = True
         GPU_BACKEND = "cuda"
         print("✅ NVIDIA GPU detected (CUDA)")
+        print(f"   📊 CUDA Version: {torch.version.cuda}")
+        print(f"   🎯 GPU Device: {torch.cuda.get_device_name(0)}")
 
-    # Check for Metal (Mac)
-    elif IS_MAC and torch.backends.mps.is_available():
-        HAS_METAL = True
-        GPU_BACKEND = "metal"
-        print("✅ Apple Silicon GPU detected (Metal)")
+    # Enhanced Metal detection for Mac
+    elif IS_MAC:
+        try:
+            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                HAS_METAL = True
+                GPU_BACKEND = "metal"
+                print("✅ Apple Silicon GPU detected (Metal)")
+                print("   🍎 Metal Performance Shaders enabled")
+                print("   🚀 GPU acceleration available")
+
+                # Test Metal device creation
+                device = torch.device("mps")
+                test_tensor = torch.randn(100, 100, device=device)
+                del test_tensor
+                print("   ✅ Metal device test passed")
+
+            else:
+                print("⚠️ Metal not available, falling back to CPU")
+                print(
+                    "   💡 Try: pip install --upgrade torch torchvision --pre --index-url https://download.pytorch.org/whl/nightly/cpu"
+                )
+                GPU_BACKEND = "cpu"
+        except Exception as e:
+            print(f"⚠️ Metal initialization failed: {e}")
+            print("   💡 Falling back to CPU")
+            GPU_BACKEND = "cpu"
 
     else:
         GPU_BACKEND = "cpu"
         print("⚠️ No GPU acceleration available, using CPU")
 
-except ImportError:
-    print("⚠️ PyTorch not available for GPU detection")
+except ImportError as e:
+    print(f"⚠️ PyTorch not available for GPU detection: {e}")
+    print("   💡 Install with: pip install torch torchvision")
+    GPU_BACKEND = "cpu"
 
 # Legacy cupy support for OpenCV CUDA operations
 try:
