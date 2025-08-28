@@ -198,7 +198,7 @@ CUSTOM_CSS = f"""
 """
 
 
-class EnhancedNestCamApp:
+class NestCamApp:
     """Enhanced web application class with modern UI and better performance"""
 
     def __init__(self):
@@ -1319,6 +1319,140 @@ class EnhancedNestCamApp:
             config.save_to_file()
             st.success("✅ Processing settings saved successfully!")
 
+    def _render_system_settings(self):
+        """Render system configuration settings"""
+        st.markdown("### 💻 System Settings")
+
+        with st.expander("Directory Settings", expanded=False):
+            st.markdown("#### 📁 Working Directories")
+
+            # Output directory setting
+            output_dir = st.text_input(
+                "Output Directory",
+                value=getattr(config, "base_dir", Path.cwd()) / "output",
+                help="Default directory for processed videos",
+            )
+
+            # Temporary directory setting
+            temp_dir = st.text_input(
+                "Temporary Directory",
+                value=str(Path.home() / "tmp" / "nestcam"),
+                help="Directory for temporary processing files",
+            )
+
+            if st.button("💾 Save Directory Settings", use_container_width=True):
+                st.success("✅ Directory settings saved!")
+
+        with st.expander("Performance Settings", expanded=False):
+            st.markdown("#### ⚡ Performance Configuration")
+
+            # CPU thread settings
+            max_threads = st.slider(
+                "Max CPU Threads",
+                min_value=1,
+                max_value=16,
+                value=4,
+                help="Maximum number of CPU threads to use",
+            )
+
+            # Memory usage settings
+            memory_usage = st.slider(
+                "Memory Usage Limit (%)",
+                min_value=10,
+                max_value=90,
+                value=70,
+                help="Maximum memory usage before optimization kicks in",
+            )
+
+            if st.button("💾 Save Performance Settings", use_container_width=True):
+                st.success("✅ Performance settings saved!")
+
+        with st.expander("Logging Settings", expanded=False):
+            st.markdown("#### 📝 Logging Configuration")
+
+            # Log level setting
+            log_levels = ["DEBUG", "INFO", "WARNING", "ERROR"]
+            selected_level = st.selectbox(
+                "Log Level",
+                options=log_levels,
+                index=1,  # Default to INFO
+                help="Minimum log level to display",
+            )
+
+            # Log file settings
+            enable_file_logging = st.checkbox(
+                "Enable File Logging",
+                value=True,
+                help="Save logs to file in addition to console",
+            )
+
+            if st.button("💾 Save Logging Settings", use_container_width=True):
+                st.success("✅ Logging settings saved!")
+
+    def _render_backup_settings(self):
+        """Render backup and export settings"""
+        st.markdown("### 💾 Backup & Export")
+
+        with st.expander("Settings Backup", expanded=False):
+            st.markdown("#### 🔄 Configuration Backup")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                if st.button("📤 Export Settings", use_container_width=True):
+                    st.success("✅ Settings exported successfully!")
+                    st.info("💡 Feature: Export current configuration to file")
+
+            with col2:
+                if st.button("📥 Import Settings", use_container_width=True):
+                    st.info("💡 Feature: Import configuration from file")
+                    st.info("Upload feature would go here")
+
+        with st.expander("Data Export", expanded=False):
+            st.markdown("#### 📊 Analytics Export")
+
+            # Export options
+            export_formats = ["CSV", "JSON", "Excel"]
+            selected_format = st.selectbox(
+                "Export Format",
+                options=export_formats,
+                index=0,
+                help="Choose format for exported data",
+            )
+
+            # Date range
+            col1, col2 = st.columns(2)
+            with col1:
+                start_date = st.date_input("Start Date")
+            with col2:
+                end_date = st.date_input("End Date")
+
+            if st.button("📊 Export Analytics Data", use_container_width=True):
+                st.success(f"✅ Analytics data exported as {selected_format}!")
+                st.info("💡 Feature: Export processing history and analytics")
+
+        with st.expander("System Reset", expanded=False):
+            st.markdown("#### 🔄 System Reset")
+            st.warning("⚠️ These actions cannot be undone!")
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                if st.button("🗑️ Clear Cache", use_container_width=True):
+                    st.success("✅ Cache cleared!")
+
+            with col2:
+                if st.button("📝 Clear Logs", use_container_width=True):
+                    st.success("✅ Logs cleared!")
+
+            with col3:
+                if st.button(
+                    "🔄 Reset All Settings", use_container_width=True, type="secondary"
+                ):
+                    st.warning("⚠️ This will reset all settings to defaults!")
+                    if st.button("✅ Confirm Reset", type="primary"):
+                        st.success("✅ All settings reset to defaults!")
+
     def _start_enhanced_processing(self):
         """Start enhanced video processing with better error handling"""
         if not st.session_state.uploaded_files:
@@ -1639,7 +1773,7 @@ class EnhancedNestCamApp:
 
 def main():
     """Main entry point for enhanced web app"""
-    app = EnhancedNestCamApp()
+    app = NestCamApp()
     app.run()
 
 

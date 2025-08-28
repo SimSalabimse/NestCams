@@ -1,0 +1,11 @@
+{
+  "dark_mode": true,
+  "performance_mode": "balanced",
+  "auto_save": true,
+  "notifications_enabled": true,
+  "ui_preferences": {
+    "show_advanced": false,
+    "auto_refresh": true,
+    "compact_view": false
+  }
+}

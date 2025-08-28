@@ -1,0 +1,10 @@
+{
+  "platform": "darwin",
+  "architecture": "arm64",
+  "gpu_backend": "auto",
+  "minimal_install": false,
+  "dev_mode": true,
+  "python_version": "3.11",
+  "installed_at": "/Users/simsalabim/Documents/GitHub/NestCams/nestcam_processsor_v2",
+  "venv_path": "/Users/simsalabim/Documents/GitHub/NestCams/nestcam_processsor_v2/nestcam_env"
+}
