@@ -9,3 +9,4 @@ nestcam_processsor_v2/.venv
 nestcam_processsor_v2/nestcam_env
 nestcam_processsor_v2/processing_states
 nestcam_processsor_v2/app.log
+nestcam_processsor_v2/-m venv

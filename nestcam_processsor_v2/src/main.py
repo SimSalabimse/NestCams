@@ -10,7 +10,7 @@ from .config import config
 
 
 def launch_streamlit_app(
-    web_app_path: Path, port: int = 8501, address: str = "0.0.0.0"
+    web_app_path: Path, port: int = 8501, address: str = "localhost"
 ):
     """
     Launch Streamlit application with proper configuration
