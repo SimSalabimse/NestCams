@@ -1,0 +1,11 @@
+# 1. Enhanced Setup (replaces old installation scripts)
+python setup.py --gpu=auto --dev  # Full setup with GPU detection and dev tools
+python setup.py --minimal        # Minimal CPU-only setup
+python setup.py --help           # See all options
+
+# 2. Launch the enhanced application
+./launch.sh --web               # macOS/Linux
+launch.bat                      # Windows
+
+# 3. Or run directly
+python -m src.ui.enhanced_web_app

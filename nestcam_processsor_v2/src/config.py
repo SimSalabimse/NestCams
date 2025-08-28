@@ -582,3 +582,8 @@ class AppConfig(BaseModel):
 
 # Global configuration instance
 config = AppConfig.load_from_file()
+
+
+def detect_gpu_backend():
+    """Detect the available GPU backend"""
+    return GPU_BACKEND

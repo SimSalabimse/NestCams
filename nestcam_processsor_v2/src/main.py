@@ -9,7 +9,9 @@ import logging
 from .config import config
 
 
-def launch_streamlit_app(web_app_path: Path, port: int = 8501, address: str = "0.0.0.0"):
+def launch_streamlit_app(
+    web_app_path: Path, port: int = 8501, address: str = "0.0.0.0"
+):
     """
     Launch Streamlit application with proper configuration
 
@@ -43,7 +45,8 @@ def launch_streamlit_app(web_app_path: Path, port: int = 8501, address: str = "0
         os.execv(sys.executable, cmd)
     except Exception as e:
         print(f"❌ Failed to launch web interface: {e}")
-        print("💡 Try running manually: streamlit run src/ui/web_app.py"        sys.exit(1)
+        print("💡 Try running manually: streamlit run src/ui/web_app.py")
+        sys.exit(1)
 
 
 def main():
@@ -101,7 +104,8 @@ def main():
     elif args.cli:
         print("NestCam Processor v2.0 - CLI mode not implemented yet")
         print("Use --web flag to run the web interface")
-        print("💡 Or run: streamlit run src/ui/web_app.py"        sys.exit(1)
+        print("💡 Or run: streamlit run src/ui/web_app.py")
+        sys.exit(1)
     else:
         # Default to web interface
         print("Starting NestCam Processor v2.0 - Web Interface...")
