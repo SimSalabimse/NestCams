@@ -1,6 +1,6 @@
 # tests.py
 import pytest
-from video_processing import compute_motion_score, is_white_or_black_frame
+from video_processing_old import compute_motion_score, is_white_or_black_frame
 
 def test_compute_motion_score():
     frame1 = np.zeros((100,100,3), dtype=np.uint8)
