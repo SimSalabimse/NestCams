@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
 from utils import ToolTip, load_settings, save_settings, load_presets, save_presets, system_check, log_session, SETTINGS_FILE, check_network_stability
-from video_processing import process_single_video, debug_get_selected_indices, debug_normalize_frame, debug_generate_output_video
+from video_processing_old import process_single_video, debug_get_selected_indices, debug_normalize_frame, debug_generate_output_video
 from youtube_upload import start_upload, debug_upload_to_youtube, get_youtube_client
 import psutil
 try:

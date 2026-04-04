@@ -1,11 +1,14 @@
+from statistics import mode
 import tkinter as tk
+from turtle import mode
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 import os
 import json
 from PIL import Image
 import time
-from video_processing import process_single_video, generate_output_video, get_selected_indices, compute_motion_score, is_white_or_black_frame, normalize_frame, process_frame_batch, probe_video_resolution, debug_get_selected_indices, debug_normalize_frame, debug_generate_output_video
+import numpy as np
+from video_processing_old import process_single_video, generate_output_video, get_selected_indices, compute_motion_score, is_white_or_black_frame, normalize_frame, process_frame_batch, probe_video_resolution, debug_get_selected_indices, debug_normalize_frame, debug_generate_output_video
 from youtube_upload import start_upload, upload_to_youtube, get_youtube_client, debug_upload_to_youtube
 from utils import log_session, ToolTip, validate_video_file, check_network_stability
 import threading
@@ -254,6 +257,28 @@ class VideoProcessorApp:
         outdir_frame = ctk.CTkFrame(frame)
         outdir_frame.pack(fill="x", pady=5)
         ctk.CTkButton(outdir_frame, text="Select Output Directory", command=self.select_output_dir).pack(side="left")
+        def update_performance_mode(mode):
+            self.performance_mode = mode
+            if mode == "Balanced":
+                self.worker_processes = 2
+                self.batch_size = 4
+            elif mode == "High Performance":
+                self.worker_processes = 4
+                self.batch_size = 8
+            elif mode == "Power Saver":
+                self.worker_processes = 1
+                self.batch_size = 2
+            log_session(f"Performance mode changed to {mode}: workers={self.worker_processes}, batch_size={self.batch_size}")
+
+ctk.CTkOptionMenu(
+    performance_frame, 
+    values=["Balanced", "High Performance", "Power Saver"],
+    variable=self.performance_var,
+    command=update_performance_mode
+).pack(side="left", padx=10)
+
+# Add tooltip
+ToolTip(performance_frame, "Balanced: 2 workers (recommended)\nHigh Performance: 4 workers (fast, high CPU)\nPower Saver: 1 worker (slow, low CPU)")
         self.output_dir_label = ctk.CTkLabel(outdir_frame, text="Current directory")
         self.output_dir_label.pack(side="left", padx=10)
         format_frame = ctk.CTkFrame(frame)
@@ -426,6 +451,7 @@ class VideoProcessorApp:
         self.clip_value_label.configure(text=f"Clip Limit: {self.clip_limit:.1f}")
         self.saturation_value_label.configure(text=f"Saturation: {self.saturation_multiplier:.1f}")
         log_session(f"Settings updated: Motion={self.motion_threshold}, White={self.white_threshold}, Black={self.black_threshold}, Clip={self.clip_limit}, Saturation={self.saturation_multiplier}, Time: {time.time() - start_time:.2f}s")
+        self.save_settings()
 
     def update_volume_label(self, value):
         start_time = time.time()
@@ -857,6 +883,21 @@ class VideoProcessorApp:
                 self.output_format_var.set(settings.get('output_format', 'mp4'))
                 self.update_channel = settings.get('update_channel', 'Stable')
                 self.update_channel_var.set(self.update_channel)
+                # Load performance mode
+                self.performance_mode = settings.get('performance_mode', 'Balanced')
+                if hasattr(self, 'performance_var'):
+                    self.performance_var.set(self.performance_mode)
+    
+                # Apply performance settings
+                if self.performance_mode == "Balanced":
+                    self.worker_processes = 2
+                    self.batch_size = 4
+                elif self.performance_mode == "High Performance":
+                    self.worker_processes = 4
+                    self.batch_size = 8
+                elif self.performance_mode == "Power Saver":
+                    self.worker_processes = 1
+                    self.batch_size = 2
                 self.music_paths = settings.get('music_paths', self.music_paths)
                 self.music_label_default.configure(text=os.path.basename(self.music_paths['default']) if self.music_paths['default'] else "No file selected")
                 self.music_label_60s.configure(text=os.path.basename(self.music_paths[60]) if self.music_paths[60] else "No file selected")
@@ -868,6 +909,29 @@ class VideoProcessorApp:
             except Exception as e:
                 log_session(f"Failed to load settings: {str(e)}")
         log_session(f"Settings loaded: {time.time() - start_time:.2f}s")
+        
+    def save_settings(self):
+    """Save current settings to settings.json"""
+    settings = {
+        'motion_threshold': self.motion_threshold,
+        'white_threshold': self.white_threshold,
+        'black_threshold': self.black_threshold,
+        'clip_limit': self.clip_limit,
+        'saturation_multiplier': self.saturation_multiplier,
+        'music_volume': self.music_volume,
+        'output_format': self.output_format_var.get(),
+        'update_channel': self.update_channel,
+        'music_paths': self.music_paths,
+        'output_dir': self.output_dir,
+        'performance_mode': self.performance_mode  # ← NEW
+    }
+    
+    try:
+        with open('settings.json', 'w') as f:
+            json.dump(settings, f, indent=2)
+        log_session("Settings saved successfully")
+    except Exception as e:
+        log_session(f"Failed to save settings: {str(e)}")
 
     def load_presets(self):
         start_time = time.time()
