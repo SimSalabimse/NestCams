@@ -87,6 +87,8 @@ class VideoProcessorApp:
             dark_image=Image.new("RGB", (200, 150), (0, 0, 0)),
             size=(200, 150),
         )
+        self.performance_var = ctk.StringVar(value="Balanced")
+        self.performance_mode = "Balanced"
         log_session(f"Initialized variables: {time.time() - start_time:.2f}s")
 
         # Check system specs
