@@ -1,0 +1,23 @@
+# Core dependencies
+opencv-python>=4.8.0
+numpy>=1.24.0
+PyQt5>=5.15.0
+
+# Video processing
+# Note: FFmpeg must be installed separately on the system
+
+# YouTube upload (optional)
+google-auth-oauthlib>=1.0.0
+google-api-python-client>=2.0.0
+
+# HTTP requests for updates
+requests>=2.31.0
+
+# Optional: GPU acceleration
+# Uncomment if you have CUDA-capable GPU
+# opencv-contrib-python>=4.8.0
+
+# Development dependencies (optional)
+# pytest>=7.4.0
+# black>=23.0.0
+# pylint>=2.17.0

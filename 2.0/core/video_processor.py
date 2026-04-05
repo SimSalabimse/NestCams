@@ -6,6 +6,7 @@ from typing import List, Tuple, Optional
 import os
 from .motion_detector import MotionDetector
 from utils.logger import logger
+from utils.overall_eta import OverallProcessETA
 
 try:
     from tqdm import tqdm
@@ -108,6 +109,7 @@ class VideoProcessor:
         motion_buffer: float = 2.0,
         merge_threshold: float = 3.0,
         use_tqdm: bool = False,
+        eta_tracker: Optional["OverallProcessETA"] = None,
     ) -> List[Tuple[float, float]]:
         """Extract segments with motion using optimized detection"""
         probe = ffmpeg.probe(input_path)
@@ -122,6 +124,9 @@ class VideoProcessor:
         frame_interval = 1.0 / fps
 
         effective_total = max(1, math.ceil(frame_count / frame_subsample))
+        if eta_tracker is not None:
+            eta_tracker.start_detection(effective_total)
+
         pbar = None
         if use_tqdm and tqdm is not None and progress_callback is None:
             pbar = tqdm(
@@ -161,6 +166,8 @@ class VideoProcessor:
                     current_segment = None
                 if pbar:
                     pbar.update(1)
+                if eta_tracker is not None:
+                    eta_tracker.update_detection()
                 continue
 
             brightness_values.append(self._get_brightness(frame))
@@ -203,6 +210,8 @@ class VideoProcessor:
 
             if pbar:
                 pbar.update(1)
+            if eta_tracker is not None:
+                eta_tracker.update_detection()
 
             # Report progress every 100 sampled frames
             if i % (frame_subsample * 100) == 0 and progress_callback:
@@ -217,6 +226,8 @@ class VideoProcessor:
         if pbar:
             pbar.close()
         cap.release()
+        if eta_tracker is not None:
+            eta_tracker.finish_detection(len(motion_segments))
         if brightness_values:
             self.target_brightness = float(np.median(brightness_values))
             logger.info(
@@ -263,6 +274,7 @@ class VideoProcessor:
         progress_callback=None,
         cancel_flag=None,
         output_format: str = "mp4",
+        eta_tracker: Optional["OverallProcessETA"] = None,
     ):
         """Create time-lapse from motion segments using selected mode"""
         if mode == "fast":
@@ -275,6 +287,7 @@ class VideoProcessor:
                 progress_callback,
                 cancel_flag,
                 output_format,
+                eta_tracker,
             )
         else:
             result = self._create_timelapse_quality(
@@ -286,6 +299,7 @@ class VideoProcessor:
                 progress_callback,
                 cancel_flag,
                 output_format,
+                eta_tracker,
             )
 
         if target_duration == 60:
@@ -605,6 +619,7 @@ class VideoProcessor:
         progress_callback=None,
         cancel_flag=None,
         output_format: str = "mp4",
+        eta_tracker: Optional["OverallProcessETA"] = None,
     ):
         """Create time-lapse using FFmpeg complex filters (fast)"""
         import subprocess
@@ -651,6 +666,8 @@ class VideoProcessor:
             # Update progress: Starting time-lapse creation
             if progress_callback:
                 progress_callback(35, 100)
+            if eta_tracker is not None:
+                eta_tracker.start_next_phase("Extracting clips")
 
             # Extract segments without speed adjustment first
             segment_files = []
@@ -703,6 +720,8 @@ class VideoProcessor:
 
                 if os.path.exists(segment_path) and os.path.getsize(segment_path) > 0:
                     segment_files.append(segment_path)
+                if eta_tracker is not None:
+                    eta_tracker.finish_segment()
 
                 # Update progress: 35% to 55% during segment extraction
                 if progress_callback:
@@ -711,6 +730,9 @@ class VideoProcessor:
 
             if not segment_files:
                 raise ValueError("No segments were successfully extracted")
+
+            if eta_tracker is not None:
+                eta_tracker.start_next_phase("Final assembly")
 
             # Update progress: 55% during concatenation
             if progress_callback:
@@ -751,6 +773,7 @@ class VideoProcessor:
         progress_callback=None,
         cancel_flag=None,
         output_format: str = "mp4",
+        eta_tracker: Optional["OverallProcessETA"] = None,
     ):
         """Create time-lapse using segment extraction + concat (quality/compatible)"""
         import subprocess
@@ -780,6 +803,8 @@ class VideoProcessor:
         # Create temporary directory for segment files
         temp_dir = tempfile.mkdtemp(prefix="nestcams_")
         try:
+            if eta_tracker is not None:
+                eta_tracker.start_next_phase("Extracting clips")
             # Extract segments to temporary files with proper H.264 encoding
             segment_files = []
             total_segments = len(motion_segments)
@@ -833,10 +858,14 @@ class VideoProcessor:
                     logger.warning(
                         f"Segment {idx} extraction failed: {result.stderr[-200:]}"
                     )
+                    if eta_tracker is not None:
+                        eta_tracker.finish_segment()
                     continue  # Skip segments that fail
 
                 if os.path.exists(segment_path) and os.path.getsize(segment_path) > 0:
                     segment_files.append(segment_path)
+                if eta_tracker is not None:
+                    eta_tracker.finish_segment()
 
                 # Update progress: 35% to 65% during segment extraction
                 if progress_callback:
@@ -845,6 +874,9 @@ class VideoProcessor:
 
             if not segment_files:
                 raise ValueError("No segments were successfully extracted")
+
+            if eta_tracker is not None:
+                eta_tracker.start_next_phase("Final assembly")
 
             # Update progress: 65% during concatenation
             if progress_callback:

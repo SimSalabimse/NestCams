@@ -30,11 +30,13 @@ from core.hardware_manager import HardwareManager
 from utils.config import Config
 from utils.logger import logger
 from utils.github_updater import GitHubUpdater
+from utils.overall_eta import OverallProcessETA
 
 
 class ProcessingThread(QThread):
     progress = pyqtSignal(int)
     status_update = pyqtSignal(str)
+    eta_update = pyqtSignal(str)
     finished = pyqtSignal(str)
     error = pyqtSignal(str)
 
@@ -67,6 +69,12 @@ class ProcessingThread(QThread):
         self.frame_subsample = frame_subsample  # analyze every Nth frame
         self.motion_buffer = motion_buffer  # seconds before/after motion
         self.cancel_flag = False
+        self.eta_tracker = OverallProcessETA(
+            console=False, update_callback=self._emit_eta
+        )
+
+    def _emit_eta(self, eta_text: str):
+        self.eta_update.emit(eta_text)
 
     def cancel(self):
         """Request cancellation of processing"""
@@ -103,6 +111,7 @@ class ProcessingThread(QThread):
                 min_segment_duration=self.min_segment_duration,
                 frame_subsample=self.frame_subsample,
                 motion_buffer=self.motion_buffer,
+                eta_tracker=self.eta_tracker,
             )
             total_motion_time = sum(end - start for start, end in segments)
             self.status_update.emit(
@@ -125,6 +134,7 @@ class ProcessingThread(QThread):
                 progress_callback=self.on_timelapse_progress,
                 cancel_flag=self,
                 output_format=self.output_format,
+                eta_tracker=self.eta_tracker,
             )
             self.status_update.emit("Time-lapse creation complete.")
             self.progress.emit(70)
@@ -144,6 +154,9 @@ class ProcessingThread(QThread):
 
             self.status_update.emit("Step 4/4: Processing complete!")
             self.progress.emit(100)
+            if hasattr(self, "eta_tracker"):
+                self.eta_tracker.start_next_phase("Final cleanup")
+                self.eta_tracker.finish()
             self.finished.emit(self.output_path)
         except Exception as e:
             self.error.emit(str(e))
@@ -605,6 +618,7 @@ class MainWindow(QMainWindow):
         )
         self.thread.progress.connect(self.update_progress)
         self.thread.status_update.connect(self.update_status)
+        self.thread.eta_update.connect(self.update_eta)
         self.thread.finished.connect(self.processing_finished)
         self.thread.error.connect(self.processing_error)
         self.thread.start()
@@ -622,17 +636,13 @@ class MainWindow(QMainWindow):
             self.youtube_btn.setEnabled(False)
 
     def update_progress(self, value: int):
-        """Update progress bar, percentage label, and ETA label."""
+        """Update progress bar and percentage label."""
         self.progress_bar.setValue(value)
         self.progress_label.setText(f"{value}%")
 
-        if hasattr(self, "processing_start_time") and value > 0:
-            elapsed = time.time() - self.processing_start_time
-            remaining = elapsed * (100 - value) / value
-            eta = self._format_seconds(remaining)
-            self.eta_label.setText(f"ETA: {eta}")
-        else:
-            self.eta_label.setText("ETA: calculating...")
+    def update_eta(self, eta_text: str):
+        """Update the ETA label with the latest estimated time remaining."""
+        self.eta_label.setText(eta_text)
 
     def _format_seconds(self, seconds: float) -> str:
         if seconds < 0:
