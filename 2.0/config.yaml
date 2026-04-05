@@ -1,0 +1,14 @@
+frame_subsample: 5
+github_repo: ''
+min_area: 500
+min_segment_duration: 0.5
+motion_algorithm: cnt
+motion_buffer: 2.0
+motion_sensitivity: 0.5
+output_dir: /Users/simsalabim/Downloads
+output_format: mp4
+output_quality: high
+processing_mode: fast
+smoothing: true
+update_check: false
+youtube_client_secrets: client_secrets.json

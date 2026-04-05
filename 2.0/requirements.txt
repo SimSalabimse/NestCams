@@ -1,0 +1,14 @@
+opencv-contrib-python>=4.5.0
+ffmpeg-python>=0.2.0
+PyQt5>=5.15.0
+numpy>=1.21.0
+tqdm>=4.65.0
+scipy>=1.7.0
+requests>=2.25.0
+GPUtil>=1.4.0
+google-api-python-client>=2.0.0
+google-auth-oauthlib>=0.4.0
+pyinstaller>=4.0.0
+pytest>=6.0.0
+packaging>=21.0
+PyYAML>=5.4.0
