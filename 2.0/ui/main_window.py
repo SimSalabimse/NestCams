@@ -181,11 +181,14 @@ class MainWindow(QMainWindow):
 
     def init_ui(self):
         self.setWindowTitle("NestCams 2.0 - Video Processor")
-        self.setGeometry(100, 100, 800, 600)
+        self.resize(980, 700)
+        self.setMinimumSize(900, 640)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
 
         # File selection
         file_group = QGroupBox("Input/Output")
@@ -201,6 +204,7 @@ class MainWindow(QMainWindow):
 
         output_layout = QHBoxLayout()
         self.output_label = QLabel("Output will be saved to: output/")
+        self.output_label.setWordWrap(True)
         output_btn = QPushButton("Select Output Location")
         output_btn.clicked.connect(self.select_output)
         output_layout.addWidget(self.output_label)
@@ -358,7 +362,10 @@ class MainWindow(QMainWindow):
 
         # Progress and status display
         self.status_label = QLabel("Ready to process video")
-        self.status_label.setStyleSheet("color: #666; font-size: 11px;")
+        self.status_label.setWordWrap(True)
+        self.status_label.setStyleSheet(
+            "color: #666; font-size: 12px; padding: 6px; background: #fafafa; border: 1px solid #e0e0e0; border-radius: 6px;"
+        )
         layout.addWidget(self.status_label)
 
         progress_layout = QHBoxLayout()
@@ -366,10 +373,11 @@ class MainWindow(QMainWindow):
         self.progress_bar.setMinimum(0)
         self.progress_bar.setMaximum(100)
         self.progress_bar.setMinimumWidth(300)
+        self.progress_bar.setFixedHeight(28)
         progress_layout.addWidget(self.progress_bar)
 
         self.progress_label = QLabel("0%")
-        self.progress_label.setMinimumWidth(50)
+        self.progress_label.setMinimumWidth(60)
         self.progress_label.setAlignment(Qt.AlignCenter)
         self.progress_label.setStyleSheet(
             "font-weight: bold; color: #0066cc; font-size: 14px; background-color: #f0f0f0; padding: 5px; border-radius: 3px;"
@@ -377,7 +385,7 @@ class MainWindow(QMainWindow):
         progress_layout.addWidget(self.progress_label)
 
         self.eta_label = QLabel("ETA: --:--")
-        self.eta_label.setMinimumWidth(120)
+        self.eta_label.setMinimumWidth(160)
         self.eta_label.setAlignment(Qt.AlignCenter)
         self.eta_label.setStyleSheet(
             "font-size: 12px; color: #444; background-color: #fafafa; padding: 5px; border-radius: 3px;"
