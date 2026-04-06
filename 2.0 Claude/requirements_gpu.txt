@@ -1,0 +1,45 @@
+# GPU-Optimized Requirements for Windows with NVIDIA GPU
+# For maximum performance on NVIDIA RTX 20xx-50xx series
+
+# CRITICAL: CUDA-enabled OpenCV for GPU motion detection
+# Remove standard opencv-python first: pip uninstall opencv-python -y
+opencv-python-cuda>=4.10.0  # 5-20x faster motion detection
+# Alternative source: https://github.com/cudawarped/opencv-python-cuda
+
+# Core dependencies
+numpy>=1.24.0
+PyQt5>=5.15.0
+
+# Video processing
+# Note: FFmpeg must be installed separately with NVENC support
+
+# Real-time monitoring
+watchdog>=3.0.0
+
+# YouTube upload (optional)
+google-auth-oauthlib>=1.0.0
+google-api-python-client>=2.0.0
+
+# HTTP requests for updates
+requests>=2.31.0
+
+# System monitoring
+psutil>=5.9.0
+
+# Optional: Advanced AI bird detection
+# torch>=2.0.0+cu118  # CUDA 11.8 version
+# torchvision>=0.15.0+cu118
+# ultralytics>=8.0.0  # For YOLO models
+
+# Development dependencies (optional)
+# pytest>=7.4.0
+# black>=23.0.0
+# pylint>=2.17.0
+
+# Installation Notes for Windows:
+# 1. Install CUDA Toolkit 11.8 or 12.x from NVIDIA
+# 2. Install opencv-python-cuda:
+#    pip install opencv-python-cuda==4.10.0.84
+# 3. Verify CUDA support:
+#    python -c "import cv2; print('CUDA devices:', cv2.cuda.getCudaEnabledDeviceCount())"
+# 4. Install FFmpeg with NVENC support (most Windows builds include it)
