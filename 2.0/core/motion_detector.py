@@ -29,21 +29,20 @@ class HardwareManager:
 
 class MotionDetector:
     def __init__(
-        self, sensitivity: float = 0.5, min_area: int = 500, algorithm: str = "mog2"
+        self,
+        sensitivity: float = 0.5,
+        min_area: int = 500,
+        algorithm: str = "mog2",
+        use_gpu: bool = False,
     ):
         self.sensitivity = sensitivity
         self.min_area = min_area
         self.algorithm = algorithm
+        self.use_gpu = use_gpu and self._cuda_available()
+        self.prev_frame = None
 
         # Initialize the appropriate background subtractor with optimized settings
-        if algorithm == "knn":
-            self.subtractor = cv2.createBackgroundSubtractorKNN(
-                history=500,  # Increased history for better adaptation
-                dist2Threshold=400.0,
-                detectShadows=False,  # Disable shadow detection for speed
-            )
-        elif algorithm == "cnt":
-            # Use CNT if available (fastest background subtractor)
+        if algorithm == "cnt":
             try:
                 self.subtractor = cv2.bgsegm.createBackgroundSubtractorCNT(
                     minPixelStability=15,
@@ -52,24 +51,79 @@ class MotionDetector:
                     isParallel=True,
                 )
             except AttributeError:
-                # Fallback to MOG2 if CNT not available
                 self.subtractor = cv2.createBackgroundSubtractorMOG2(
                     history=500, varThreshold=30, detectShadows=False
+                )
+        elif algorithm == "knn":
+            if self.use_gpu and hasattr(cv2.cuda, "createBackgroundSubtractorMOG2"):
+                try:
+                    self.subtractor = cv2.cuda.createBackgroundSubtractorMOG2(
+                        history=500, varThreshold=30, detectShadows=False
+                    )
+                except Exception:
+                    self.subtractor = cv2.createBackgroundSubtractorKNN(
+                        history=500,
+                        dist2Threshold=400.0,
+                        detectShadows=False,
+                    )
+            else:
+                self.subtractor = cv2.createBackgroundSubtractorKNN(
+                    history=500,
+                    dist2Threshold=400.0,
+                    detectShadows=False,
                 )
         elif algorithm == "simple":
             self.prev_frame = None
         else:  # mog2 (default) - optimized for bird detection
-            self.subtractor = cv2.createBackgroundSubtractorMOG2(
-                history=500,  # More history for stable backgrounds
-                varThreshold=30,  # Lower threshold for better sensitivity
-                detectShadows=False,  # Disable for speed and to avoid false positives
-            )
+            if self.use_gpu and hasattr(cv2.cuda, "createBackgroundSubtractorMOG2"):
+                try:
+                    self.subtractor = cv2.cuda.createBackgroundSubtractorMOG2(
+                        history=500,
+                        varThreshold=30,
+                        detectShadows=False,
+                    )
+                except Exception:
+                    self.subtractor = cv2.createBackgroundSubtractorMOG2(
+                        history=500,
+                        varThreshold=30,
+                        detectShadows=False,
+                    )
+            else:
+                self.subtractor = cv2.createBackgroundSubtractorMOG2(
+                    history=500,
+                    varThreshold=30,
+                    detectShadows=False,
+                )
+
+    def _cuda_available(self) -> bool:
+        return hasattr(cv2, "cuda") and cv2.cuda.getCudaEnabledDeviceCount() > 0
+
+    def _preprocess_frame_cuda(
+        self, frame: np.ndarray, downscale_factor: float = 0.25
+    ) -> np.ndarray:
+        height, width = frame.shape[:2]
+        new_width = int(width * downscale_factor)
+        new_height = int(height * downscale_factor)
+        gpu_frame = cv2.cuda_GpuMat()
+        gpu_frame.upload(frame)
+        resized = cv2.cuda.resize(
+            gpu_frame, (new_width, new_height), interpolation=cv2.INTER_LINEAR
+        )
+        gray = cv2.cuda.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+        result = gray.download()
+        result = cv2.GaussianBlur(result, (7, 7), 0)
+        return result
 
     def preprocess_frame(
         self, frame: np.ndarray, downscale_factor: float = 0.25
     ) -> np.ndarray:
         """Preprocess frame for optimal motion detection"""
-        # Downscale for speed (default 0.25 = 320x240 from 1280x720)
+        if self.use_gpu:
+            try:
+                return self._preprocess_frame_cuda(frame, downscale_factor)
+            except Exception:
+                pass
+
         height, width = frame.shape[:2]
         new_width = int(width * downscale_factor)
         new_height = int(height * downscale_factor)

@@ -21,6 +21,7 @@ class Config:
             "frame_subsample": 5,
             "motion_buffer": 2.0,
             "output_format": "mp4",  # "mp4", "webm", "avi"
+            "use_gpu": False,
         }
         self.config = self.load_config()
 

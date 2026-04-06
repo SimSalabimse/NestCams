@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QTextEdit,
     QLineEdit,
+    QSizePolicy,
 )
 from typing import Tuple
 from PyQt5.QtCore import QThread, pyqtSignal, QTimer, Qt
@@ -171,6 +172,7 @@ class MainWindow(QMainWindow):
             sensitivity=self.config.get("motion_sensitivity"),
             min_area=self.config.get("min_area"),
             algorithm=self.config.get("motion_algorithm"),
+            use_gpu=self.config.get("use_gpu", False),
         )
         self.processor = VideoProcessor(self.motion_detector)
         self.updater = GitHubUpdater(self.config.get("github_repo"))
@@ -184,11 +186,27 @@ class MainWindow(QMainWindow):
         self.resize(980, 700)
         self.setMinimumSize(900, 640)
 
+        self.setStyleSheet(
+            "QWidget { background: #f5f7fa; color: #1f2937; font-family: 'Segoe UI', Arial, sans-serif; }"
+            "QGroupBox { border: 1px solid #d1d5db; border-radius: 14px; margin-top: 18px; background: #ffffff; }"
+            "QGroupBox:title { subcontrol-origin: margin; left: 14px; padding: 0 8px 0 8px; color: #111827; font-weight: 700; }"
+            "QLabel { font-size: 12px; }"
+            "QPushButton { min-height: 38px; font-weight: 600; border-radius: 10px; background: #2563eb; color: #ffffff; padding: 0 16px; }"
+            "QPushButton:hover { background: #1d4ed8; }"
+            "QPushButton:disabled { background: #93c5fd; color: #f8fafc; }"
+            "QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit { min-height: 36px; border: 1px solid #cbd5e1; border-radius: 10px; padding: 0 10px; background: #ffffff; }"
+            "QProgressBar { border: 1px solid #cbd5e1; border-radius: 16px; background: #e2e8f0; color: #111827; min-height: 34px; }"
+            "QProgressBar::chunk { border-radius: 16px; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #38bdf8, stop:1 #0ea5e9); }"
+            "QTextEdit { border: 1px solid #cbd5e1; border-radius: 10px; background: #ffffff; }"
+            "QScrollBar:vertical { width: 10px; background: #f1f5f9; border-radius: 5px; }"
+            "QScrollBar::handle:vertical { background: #cbd5e1; border-radius: 5px; }"
+        )
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
         layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setSpacing(14)
 
         # File selection
         file_group = QGroupBox("Input/Output")
@@ -268,6 +286,13 @@ class MainWindow(QMainWindow):
         self.smoothing_check = QCheckBox("Enable smoothing")
         self.smoothing_check.setChecked(self.config.get("smoothing"))
         settings_layout.addWidget(self.smoothing_check)
+
+        self.gpu_check = QCheckBox("Use GPU acceleration (if available)")
+        self.gpu_check.setChecked(self.config.get("use_gpu", False))
+        self.gpu_check.setToolTip(
+            "Enable GPU-assisted preprocessing and motion detection when supported by OpenCV."
+        )
+        settings_layout.addWidget(self.gpu_check)
 
         music_layout = QHBoxLayout()
         self.music_check = QCheckBox("Add music")
@@ -369,26 +394,32 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.status_label)
 
         progress_layout = QHBoxLayout()
+        progress_layout.setSpacing(12)
         self.progress_bar = QProgressBar()
         self.progress_bar.setMinimum(0)
         self.progress_bar.setMaximum(100)
-        self.progress_bar.setMinimumWidth(300)
-        self.progress_bar.setFixedHeight(28)
-        progress_layout.addWidget(self.progress_bar)
+        self.progress_bar.setMinimumWidth(320)
+        self.progress_bar.setMaximumWidth(840)
+        self.progress_bar.setMinimumHeight(36)
+        self.progress_bar.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.progress_bar.setTextVisible(True)
+        progress_layout.addWidget(self.progress_bar, 2)
 
         self.progress_label = QLabel("0%")
-        self.progress_label.setMinimumWidth(60)
+        self.progress_label.setMinimumWidth(70)
+        self.progress_label.setMinimumHeight(36)
         self.progress_label.setAlignment(Qt.AlignCenter)
         self.progress_label.setStyleSheet(
-            "font-weight: bold; color: #0066cc; font-size: 14px; background-color: #f0f0f0; padding: 5px; border-radius: 3px;"
+            "font-weight: bold; color: #1d4ed8; font-size: 14px; background-color: #eef2ff; padding: 8px 10px; border-radius: 8px;"
         )
         progress_layout.addWidget(self.progress_label)
 
         self.eta_label = QLabel("ETA: --:--")
-        self.eta_label.setMinimumWidth(160)
+        self.eta_label.setMinimumWidth(180)
+        self.eta_label.setMinimumHeight(36)
         self.eta_label.setAlignment(Qt.AlignCenter)
         self.eta_label.setStyleSheet(
-            "font-size: 12px; color: #444; background-color: #fafafa; padding: 5px; border-radius: 3px;"
+            "font-size: 13px; color: #111827; background-color: #f8fafc; padding: 8px 10px; border-radius: 8px; border: 1px solid #e2e8f0;"
         )
         progress_layout.addWidget(self.eta_label)
 
@@ -466,6 +497,7 @@ class MainWindow(QMainWindow):
 
         self.config.set("motion_sensitivity", self.sensitivity_spin.value())
         self.config.set("smoothing", self.smoothing_check.isChecked())
+        self.config.set("use_gpu", self.gpu_check.isChecked())
         self.config.set("github_repo", self.repo_input.text().strip())
         self.config.set(
             "processing_mode", mode_map.get(self.mode_combo.currentText(), "fast")
@@ -490,6 +522,7 @@ class MainWindow(QMainWindow):
             sensitivity=self.sensitivity_spin.value(),
             min_area=self.config.get("min_area"),
             algorithm=algorithm,
+            use_gpu=self.gpu_check.isChecked(),
         )
         self.processor.motion_detector = self.motion_detector
 
@@ -539,6 +572,7 @@ class MainWindow(QMainWindow):
         self.segment_spin.setValue(self.config.get("min_segment_duration", 0.5))
         self.subsample_spin.setValue(self.config.get("frame_subsample", 5))
         self.buffer_spin.setValue(self.config.get("motion_buffer", 2.0))
+        self.gpu_check.setChecked(self.config.get("use_gpu", False))
 
     def check_motion_time(
         self, input_path: str, target_duration: int

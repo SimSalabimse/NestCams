@@ -8,7 +8,11 @@ def main():
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
-    app.setFont(QFont("Segoe UI", 10))
+    app.setStyle("Fusion")
+    font = QFont("Segoe UI", 10)
+    font.setStyleStrategy(QFont.PreferAntialias)
+    app.setFont(font)
+    app.setPalette(app.style().standardPalette())
 
     window = MainWindow()
     sys.exit(app.exec_())
