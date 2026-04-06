@@ -6,6 +6,9 @@ PyQt5>=5.15.0
 # Video processing
 # Note: FFmpeg must be installed separately on the system
 
+# Real-time monitoring
+watchdog>=3.0.0
+
 # YouTube upload (optional)
 google-auth-oauthlib>=1.0.0
 google-api-python-client>=2.0.0
@@ -13,9 +16,18 @@ google-api-python-client>=2.0.0
 # HTTP requests for updates
 requests>=2.31.0
 
-# Optional: GPU acceleration
-# Uncomment if you have CUDA-capable GPU
+# Analytics and database
+# (SQLite is built into Python)
+
+# Optional: GPU acceleration and AI detection
+# Uncomment if you have CUDA-capable GPU or want AI bird detection
+# torch>=2.0.0
+# torchvision>=0.15.0
+# ultralytics>=8.0.0  # For YOLO models
 # opencv-contrib-python>=4.8.0
+
+# Optional: System monitoring
+psutil>=5.9.0
 
 # Development dependencies (optional)
 # pytest>=7.4.0

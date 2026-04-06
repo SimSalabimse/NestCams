@@ -1,12 +1,14 @@
 """
-Motion Detection Module
-Detects motion in video files and returns time segments with activity
+Enhanced Motion Detection Module
+Detects motion while filtering out bad frames
 """
 
 import cv2
 import numpy as np
 import logging
 from typing import List, Tuple, Callable, Optional
+
+from frame_analyzer import SmartFrameFilter
 
 logger = logging.getLogger(__name__)
 
@@ -19,24 +21,26 @@ class MotionDetector:
         self.motion_threshold = config.get('motion_threshold', 25)
         self.blur_size = config.get('blur_size', 21)
         
-        # Adjust threshold based on sensitivity (1-10 scale)
-        # Higher sensitivity = lower threshold
+        # Adjusted threshold based on sensitivity
         self.adjusted_threshold = self.motion_threshold * (11 - self.sensitivity) / 5
+        
+        # Frame filtering
+        self.frame_filter = SmartFrameFilter(config)
         
         logger.info(f"Motion detector initialized with sensitivity={self.sensitivity}, "
                    f"threshold={self.adjusted_threshold:.1f}")
     
     def detect_motion(self, video_path: str, 
-                     progress_callback: Optional[Callable] = None) -> List[Tuple[float, float]]:
+                     progress_callback: Optional[Callable] = None) -> Tuple[List[Tuple[float, float]], dict]:
         """
-        Detect motion segments in video
+        Detect motion segments in video with quality filtering
         
         Args:
             video_path: Path to input video
             progress_callback: Optional callback for progress updates
         
         Returns:
-            List of (start_time, end_time) tuples in seconds where motion was detected
+            Tuple of (motion_segments, statistics)
         """
         logger.info(f"Starting motion detection on: {video_path}")
         
@@ -56,12 +60,24 @@ class MotionDetector:
         if not ret:
             raise ValueError("Cannot read first frame")
         
+        # Check first frame quality
+        keep_frame, frame1, reason = self.frame_filter.filter_frame(frame1)
+        while not keep_frame and ret:
+            ret, frame1 = cap.read()
+            if ret:
+                keep_frame, frame1, reason = self.frame_filter.filter_frame(frame1)
+        
+        if not ret:
+            raise ValueError("No valid frames found in video")
+        
         # Convert to grayscale and blur
         gray1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
         gray1 = cv2.GaussianBlur(gray1, (self.blur_size, self.blur_size), 0)
         
         motion_frames = []  # List of frame numbers with motion
+        valid_frames = {0: True}  # Track valid frames
         frame_count = 0
+        valid_frame_count = 0
         
         # Process frames
         while True:
@@ -76,8 +92,18 @@ class MotionDetector:
                 progress = (frame_count / total_frames) * 100
                 progress_callback(progress)
             
+            # Check frame quality
+            keep_frame, frame2_processed, reason = self.frame_filter.filter_frame(frame2)
+            
+            if not keep_frame:
+                valid_frames[frame_count] = False
+                continue
+            
+            valid_frames[frame_count] = True
+            valid_frame_count += 1
+            
             # Convert to grayscale and blur
-            gray2 = cv2.cvtColor(frame2, cv2.COLOR_BGR2GRAY)
+            gray2 = cv2.cvtColor(frame2_processed, cv2.COLOR_BGR2GRAY)
             gray2 = cv2.GaussianBlur(gray2, (self.blur_size, self.blur_size), 0)
             
             # Compute difference
@@ -94,7 +120,7 @@ class MotionDetector:
             motion_pixels = cv2.countNonZero(dilated)
             
             # If significant motion detected
-            if motion_pixels > 1000:  # Minimum pixel threshold
+            if motion_pixels > 1000:
                 motion_frames.append(frame_count)
             
             # Move to next frame
@@ -106,25 +132,31 @@ class MotionDetector:
         motion_segments = self._frames_to_segments(motion_frames, fps, 
                                                    self.min_motion_duration)
         
+        # Get filtering statistics
+        filter_stats = self.frame_filter.get_statistics()
+        
         logger.info(f"Detected {len(motion_segments)} motion segments")
         total_motion_time = sum(end - start for start, end in motion_segments)
         logger.info(f"Total motion time: {total_motion_time:.1f}s out of {duration:.1f}s "
                    f"({total_motion_time/duration*100:.1f}%)")
+        logger.info(f"Frame filtering: {filter_stats['filtered']} bad frames removed "
+                   f"({filter_stats.get('filter_rate', 0):.1f}%)")
         
-        return motion_segments
+        stats = {
+            'total_frames': total_frames,
+            'valid_frames': valid_frame_count,
+            'motion_segments': len(motion_segments),
+            'motion_duration': total_motion_time,
+            'video_duration': duration,
+            'filter_stats': filter_stats
+        }
+        
+        return motion_segments, stats
     
     def _frames_to_segments(self, motion_frames: List[int], fps: float, 
                            min_duration: float) -> List[Tuple[float, float]]:
         """
         Convert list of motion frames to time segments
-        
-        Args:
-            motion_frames: List of frame numbers with detected motion
-            fps: Video frame rate
-            min_duration: Minimum duration for a segment in seconds
-        
-        Returns:
-            List of (start_time, end_time) tuples
         """
         if not motion_frames:
             return []
@@ -164,7 +196,7 @@ class MotionDetector:
             current_start, current_end = segments[0]
             
             for start, end in segments[1:]:
-                if start - current_end <= 2.0:  # Merge if gap is small
+                if start - current_end <= 2.0:
                     current_end = end
                 else:
                     merged_segments.append((current_start, current_end))
@@ -173,35 +205,3 @@ class MotionDetector:
             merged_segments.append((current_start, current_end))
         
         return merged_segments
-
-
-class GPUMotionDetector(MotionDetector):
-    """GPU-accelerated motion detector using CUDA (if available)"""
-    
-    def __init__(self, config: dict):
-        super().__init__(config)
-        
-        # Check for CUDA support
-        try:
-            if cv2.cuda.getCudaEnabledDeviceCount() > 0:
-                self.use_cuda = True
-                logger.info("CUDA acceleration available and enabled")
-            else:
-                self.use_cuda = False
-                logger.info("CUDA not available, falling back to CPU")
-        except:
-            self.use_cuda = False
-            logger.info("CUDA not available, falling back to CPU")
-    
-    def detect_motion(self, video_path: str, 
-                     progress_callback: Optional[Callable] = None) -> List[Tuple[float, float]]:
-        """GPU-accelerated motion detection"""
-        
-        if not self.use_cuda:
-            # Fall back to CPU implementation
-            return super().detect_motion(video_path, progress_callback)
-        
-        # TODO: Implement CUDA-accelerated version
-        # For now, use CPU version
-        logger.info("GPU motion detection not yet implemented, using CPU")
-        return super().detect_motion(video_path, progress_callback)

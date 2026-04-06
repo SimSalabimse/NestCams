@@ -1,28 +1,65 @@
 """
-Update Checker Module
-Checks for new releases on GitHub
+Enhanced Update Checker Module
+Checks for new releases on GitHub with configurable repository
 """
 
 import requests
 import logging
 from typing import Tuple, Optional
+from config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
 # Application version
-CURRENT_VERSION = "1.0.0"
+CURRENT_VERSION = "2.0.0"  # Updated with all new features
 
-# GitHub repository (update with your actual repo)
-GITHUB_REPO = "yourusername/bird-motion-processor"
+# Default GitHub repository (user can change in settings)
+DEFAULT_GITHUB_REPO = "yourusername/bird-motion-processor"
 
 
 class UpdateChecker:
     """Checks for application updates on GitHub"""
     
-    def __init__(self, repo: str = GITHUB_REPO, current_version: str = CURRENT_VERSION):
-        self.repo = repo
+    def __init__(self, repo: Optional[str] = None, current_version: str = CURRENT_VERSION):
         self.current_version = current_version
+        
+        # Load repo from config or use provided/default
+        if repo:
+            self.repo = repo
+        else:
+            config_manager = ConfigManager()
+            self.repo = config_manager.get_setting('github_repo', DEFAULT_GITHUB_REPO)
+        
+        self.api_url = f"https://api.github.com/repos/{self.repo}/releases/latest"
+        logger.info(f"Update checker configured for repo: {self.repo}")
+    
+    def set_repository(self, repo: str) -> bool:
+        """
+        Set the GitHub repository to check
+        
+        Args:
+            repo: Repository in format "owner/repo"
+        
+        Returns:
+            True if valid format
+        """
+        if '/' not in repo or len(repo.split('/')) != 2:
+            logger.error(f"Invalid repository format: {repo}. Use 'owner/repo'")
+            return False
+        
+        self.repo = repo
         self.api_url = f"https://api.github.com/repos/{repo}/releases/latest"
+        
+        # Save to config
+        config_manager = ConfigManager()
+        config_manager.set_setting('github_repo', repo)
+        
+        logger.info(f"Repository updated to: {repo}")
+        return True
+    
+    def get_repository(self) -> str:
+        """Get current repository"""
+        return self.repo
     
     def check_for_updates(self) -> Tuple[bool, Optional[str], Optional[str]]:
         """

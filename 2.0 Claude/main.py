@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 """
-Bird Motion Video Processor
-A comprehensive video processing tool for extracting motion from long recordings
-and creating time-lapse videos with adjustable length.
+Bird Motion Video Processor v2.0
+Enhanced with AI detection, real-time monitoring, analytics, and advanced processing
 """
 
 import sys
 import os
 import json
 import logging
+import time
 from pathlib import Path
+from datetime import datetime, timedelta
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QPushButton, QLabel, QProgressBar,
                              QFileDialog, QComboBox, QSpinBox, QDoubleSpinBox,
                              QGroupBox, QCheckBox, QTextEdit, QTabWidget,
-                             QMessageBox, QLineEdit, QSlider)
-from PyQt5.QtCore import QThread, pyqtSignal, Qt
+                             QMessageBox, QLineEdit, QSlider, QTableWidget,
+                             QTableWidgetItem, QHeaderView)
+from PyQt5.QtCore import QThread, pyqtSignal, Qt, QTimer
 from PyQt5.QtGui import QFont, QIcon
 
 from motion_detector import MotionDetector
@@ -23,6 +25,9 @@ from video_processor import VideoProcessor
 from youtube_uploader import YouTubeUploader
 from update_checker import UpdateChecker
 from config_manager import ConfigManager
+from analytics_dashboard import AnalyticsDashboard
+from real_time_monitor import RealTimeMonitor
+from bird_detector import get_bird_detector
 
 # Setup logging
 logging.basicConfig(
@@ -37,60 +42,114 @@ logger = logging.getLogger(__name__)
 
 
 class ProcessingThread(QThread):
-    """Background thread for video processing to keep UI responsive"""
+    """Enhanced background thread with cancellation and time estimates"""
     progress_update = pyqtSignal(int, str)
-    processing_complete = pyqtSignal(bool, str)
+    time_estimate = pyqtSignal(float)  # Seconds remaining
+    processing_complete = pyqtSignal(bool, str, dict)  # success, message, stats
     
-    def __init__(self, config, video_path, output_path):
+    def __init__(self, config, video_path, output_paths, batch_mode=False):
         super().__init__()
         self.config = config
         self.video_path = video_path
-        self.output_path = output_path
+        self.output_paths = output_paths
+        self.batch_mode = batch_mode
+        self.start_time = None
+        self.cancelled = False
+        
+    def cancel(self):
+        """Cancel processing"""
+        self.cancelled = True
+        logger.info("Cancellation requested")
         
     def run(self):
         try:
+            self.start_time = time.time()
+            
             # Step 1: Detect motion
-            self.progress_update.emit(10, "Analyzing video for motion...")
+            self.progress_update.emit(5, "Analyzing video for motion...")
             detector = MotionDetector(self.config)
-            motion_segments = detector.detect_motion(
+            motion_segments, stats = detector.detect_motion(
                 self.video_path,
-                progress_callback=lambda p: self.progress_update.emit(10 + int(p * 0.4), f"Detecting motion: {p:.1f}%")
+                progress_callback=lambda p: self._update_progress(5, 45, p, "Detecting motion")
             )
             
-            if not motion_segments:
-                self.processing_complete.emit(False, "No motion detected in video")
+            if self.cancelled:
+                self.processing_complete.emit(False, "Processing cancelled", {})
                 return
             
-            # Step 2: Process video
+            if not motion_segments:
+                self.processing_complete.emit(False, "No motion detected in video", {})
+                return
+            
+            # Step 2: Process video(s)
             self.progress_update.emit(50, "Processing video segments...")
             processor = VideoProcessor(self.config)
-            success = processor.create_timelapse(
-                self.video_path,
-                motion_segments,
-                self.output_path,
-                progress_callback=lambda p: self.progress_update.emit(50 + int(p * 0.5), f"Creating time-lapse: {p:.1f}%")
-            )
             
-            if success:
-                self.processing_complete.emit(True, f"Video saved to: {self.output_path}")
+            # Set cancel handler
+            self.cancelled_check = lambda: self.cancelled
+            
+            if self.batch_mode:
+                # Process all lengths
+                results = processor.create_timelapse_batch(
+                    self.video_path,
+                    motion_segments,
+                    self.output_paths,
+                    progress_callback=lambda p: self._update_progress(50, 100, p, "Creating time-lapses"),
+                    time_estimate_callback=self.time_estimate.emit
+                )
+                
+                if results:
+                    message = f"Created {len(results)} time-lapses:\n"
+                    for length, path in results.items():
+                        message += f"  {length}s → {path}\n"
+                    
+                    stats['output_files'] = results
+                    stats['processing_time'] = time.time() - self.start_time
+                    
+                    self.processing_complete.emit(True, message, stats)
+                else:
+                    self.processing_complete.emit(False, "Failed to create time-lapses", {})
             else:
-                self.processing_complete.emit(False, "Failed to process video")
+                # Single time-lapse
+                success = processor.create_timelapse(
+                    self.video_path,
+                    motion_segments,
+                    self.output_paths,
+                    progress_callback=lambda p: self._update_progress(50, 100, p, "Creating time-lapse"),
+                    time_estimate_callback=self.time_estimate.emit
+                )
+                
+                if success:
+                    stats['output_file'] = self.output_paths
+                    stats['processing_time'] = time.time() - self.start_time
+                    self.processing_complete.emit(True, f"Video saved to: {self.output_paths}", stats)
+                else:
+                    self.processing_complete.emit(False, "Failed to process video", {})
                 
         except Exception as e:
             logger.exception("Error during processing")
-            self.processing_complete.emit(False, f"Error: {str(e)}")
+            self.processing_complete.emit(False, f"Error: {str(e)}", {})
+    
+    def _update_progress(self, start, end, percent, message):
+        """Update progress with interpolation"""
+        if self.cancelled:
+            return
+        progress = int(start + (end - start) * (percent / 100))
+        self.progress_update.emit(progress, f"{message}: {percent:.1f}%")
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.config_manager = ConfigManager()
+        self.analytics = AnalyticsDashboard()
         self.processing_thread = None
+        self.real_time_monitor = None
         self.init_ui()
         
     def init_ui(self):
-        self.setWindowTitle("Bird Motion Video Processor v1.0")
-        self.setGeometry(100, 100, 900, 700)
+        self.setWindowTitle("Bird Motion Video Processor v2.0")
+        self.setGeometry(100, 100, 1000, 800)
         
         # Main widget and layout
         main_widget = QWidget()
@@ -98,7 +157,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(main_widget)
         
         # Title
-        title = QLabel("Bird Box Motion Processor")
+        title = QLabel("Bird Box Motion Processor v2.0")
         title.setFont(QFont("Arial", 18, QFont.Bold))
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
@@ -108,11 +167,13 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.create_main_tab(), "Process Video")
         tabs.addTab(self.create_settings_tab(), "Settings")
         tabs.addTab(self.create_upload_tab(), "YouTube Upload")
+        tabs.addTab(self.create_analytics_tab(), "Analytics")
+        tabs.addTab(self.create_monitoring_tab(), "Real-Time Monitor")
         tabs.addTab(self.create_updates_tab(), "Updates")
         layout.addWidget(tabs)
         
         # Status bar
-        self.statusBar().showMessage("Ready")
+        self.statusBar().showMessage("Ready - Enhanced v2.0")
         
     def create_main_tab(self):
         """Main processing tab"""
@@ -134,8 +195,15 @@ class MainWindow(QMainWindow):
         output_group = QGroupBox("Output Settings")
         output_layout = QVBoxLayout()
         
-        # Target length
-        length_layout = QHBoxLayout()
+        # Batch mode checkbox
+        self.batch_mode = QCheckBox("Process ALL lengths at once (60s, 10min, 1hr)")
+        self.batch_mode.setChecked(False)
+        self.batch_mode.stateChanged.connect(self.on_batch_mode_changed)
+        output_layout.addWidget(self.batch_mode)
+        
+        # Target length (for single mode)
+        self.length_widget = QWidget()
+        length_layout = QHBoxLayout(self.length_widget)
         length_layout.addWidget(QLabel("Target Length:"))
         self.target_length = QComboBox()
         self.target_length.addItems(["60 seconds", "10 minutes", "1 hour", "Custom"])
@@ -149,7 +217,7 @@ class MainWindow(QMainWindow):
         self.custom_length.setEnabled(False)
         length_layout.addWidget(self.custom_length)
         length_layout.addStretch()
-        output_layout.addLayout(length_layout)
+        output_layout.addWidget(self.length_widget)
         
         # Output path
         path_layout = QHBoxLayout()
@@ -161,16 +229,43 @@ class MainWindow(QMainWindow):
         path_layout.addWidget(output_browse)
         output_layout.addLayout(path_layout)
         
-        # Add music option
-        music_layout = QHBoxLayout()
+        # Add music options
+        music_group = QGroupBox("Background Music")
+        music_layout = QVBoxLayout()
+        
         self.add_music_check = QCheckBox("Add background music")
         music_layout.addWidget(self.add_music_check)
-        self.music_path_label = QLabel("No music selected")
-        music_layout.addWidget(self.music_path_label)
-        music_browse = QPushButton("Browse...")
-        music_browse.clicked.connect(self.browse_music)
-        music_layout.addWidget(music_browse)
-        output_layout.addLayout(music_layout)
+        
+        # Music for different lengths
+        self.music_60s_layout = QHBoxLayout()
+        self.music_60s_layout.addWidget(QLabel("60s video:"))
+        self.music_60s_label = QLabel("No music")
+        self.music_60s_layout.addWidget(self.music_60s_label)
+        music_60s_btn = QPushButton("Browse...")
+        music_60s_btn.clicked.connect(lambda: self.browse_music(60))
+        self.music_60s_layout.addWidget(music_60s_btn)
+        music_layout.addLayout(self.music_60s_layout)
+        
+        self.music_10min_layout = QHBoxLayout()
+        self.music_10min_layout.addWidget(QLabel("10min video:"))
+        self.music_10min_label = QLabel("No music")
+        self.music_10min_layout.addWidget(self.music_10min_label)
+        music_10min_btn = QPushButton("Browse...")
+        music_10min_btn.clicked.connect(lambda: self.browse_music(600))
+        self.music_10min_layout.addWidget(music_10min_btn)
+        music_layout.addLayout(self.music_10min_layout)
+        
+        self.music_1hr_layout = QHBoxLayout()
+        self.music_1hr_layout.addWidget(QLabel("1hr video:"))
+        self.music_1hr_label = QLabel("No music")
+        self.music_1hr_layout.addWidget(self.music_1hr_label)
+        music_1hr_btn = QPushButton("Browse...")
+        music_1hr_btn.clicked.connect(lambda: self.browse_music(3600))
+        self.music_1hr_layout.addWidget(music_1hr_btn)
+        music_layout.addLayout(self.music_1hr_layout)
+        
+        music_group.setLayout(music_layout)
+        output_layout.addWidget(music_group)
         
         output_group.setLayout(output_layout)
         layout.addWidget(output_group)
@@ -195,29 +290,38 @@ class MainWindow(QMainWindow):
         sens_layout.addWidget(self.sensitivity_label)
         quick_layout.addLayout(sens_layout)
         
-        # Speed smoothing
-        smooth_layout = QHBoxLayout()
-        smooth_layout.addWidget(QLabel("Speed Smoothing:"))
-        self.smoothing_slider = QSlider(Qt.Horizontal)
-        self.smoothing_slider.setRange(0, 10)
-        self.smoothing_slider.setValue(5)
-        smooth_layout.addWidget(self.smoothing_slider)
-        self.smoothing_label = QLabel("5")
-        self.smoothing_slider.valueChanged.connect(
-            lambda v: self.smoothing_label.setText(str(v))
-        )
-        smooth_layout.addWidget(self.smoothing_label)
-        quick_layout.addLayout(smooth_layout)
+        # Enhancement options
+        self.motion_blur_check = QCheckBox("Add motion blur (smoother video)")
+        self.motion_blur_check.setChecked(True)
+        quick_layout.addWidget(self.motion_blur_check)
+        
+        self.smooth_transitions_check = QCheckBox("Smooth transitions between segments")
+        self.smooth_transitions_check.setChecked(True)
+        quick_layout.addWidget(self.smooth_transitions_check)
+        
+        self.color_correction_check = QCheckBox("Apply color correction")
+        self.color_correction_check.setChecked(True)
+        quick_layout.addWidget(self.color_correction_check)
         
         quick_group.setLayout(quick_layout)
         layout.addWidget(quick_group)
         
-        # Process button
+        # Process buttons
+        button_layout = QHBoxLayout()
         self.process_btn = QPushButton("Start Processing")
         self.process_btn.setFont(QFont("Arial", 12, QFont.Bold))
         self.process_btn.setMinimumHeight(50)
         self.process_btn.clicked.connect(self.start_processing)
-        layout.addWidget(self.process_btn)
+        button_layout.addWidget(self.process_btn)
+        
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setFont(QFont("Arial", 12))
+        self.cancel_btn.setMinimumHeight(50)
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.clicked.connect(self.cancel_processing)
+        button_layout.addWidget(self.cancel_btn)
+        
+        layout.addLayout(button_layout)
         
         # Progress
         progress_group = QGroupBox("Progress")
@@ -226,6 +330,8 @@ class MainWindow(QMainWindow):
         progress_layout.addWidget(self.progress_bar)
         self.progress_label = QLabel("Ready to process")
         progress_layout.addWidget(self.progress_label)
+        self.time_estimate_label = QLabel("")
+        progress_layout.addWidget(self.time_estimate_label)
         progress_group.setLayout(progress_layout)
         layout.addWidget(progress_group)
         
@@ -239,7 +345,9 @@ class MainWindow(QMainWindow):
         log_group.setLayout(log_layout)
         layout.addWidget(log_group)
         
-        layout.addStretch()
+        # Music paths storage
+        self.music_paths = {60: None, 600: None, 3600: None}
+        
         return tab
     
     def create_settings_tab(self):
@@ -313,6 +421,31 @@ class MainWindow(QMainWindow):
         
         proc_group.setLayout(proc_layout)
         layout.addWidget(proc_group)
+        
+        # Frame filtering settings
+        filter_group = QGroupBox("Frame Quality Filtering")
+        filter_layout = QVBoxLayout()
+        
+        filter_layout.addWidget(QLabel("Automatically remove bad frames:"))
+        
+        self.filter_white_frames = QCheckBox("White frames (overexposed/pause screens)")
+        self.filter_white_frames.setChecked(True)
+        filter_layout.addWidget(self.filter_white_frames)
+        
+        self.filter_black_frames = QCheckBox("Black frames (underexposed/stream down)")
+        self.filter_black_frames.setChecked(True)
+        filter_layout.addWidget(self.filter_black_frames)
+        
+        self.filter_corrupted_frames = QCheckBox("Corrupted frames (green/purple artifacts)")
+        self.filter_corrupted_frames.setChecked(True)
+        filter_layout.addWidget(self.filter_corrupted_frames)
+        
+        self.filter_blurry_frames = QCheckBox("Blurry frames (out of focus)")
+        self.filter_blurry_frames.setChecked(True)
+        filter_layout.addWidget(self.filter_blurry_frames)
+        
+        filter_group.setLayout(filter_layout)
+        layout.addWidget(filter_group)
         
         # Save/Load settings
         btn_layout = QHBoxLayout()
@@ -388,18 +521,118 @@ class MainWindow(QMainWindow):
         
         return tab
     
+    def create_analytics_tab(self):
+        """Analytics dashboard tab"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        
+        # Summary statistics
+        summary_group = QGroupBox("Processing Statistics")
+        summary_layout = QVBoxLayout()
+        
+        self.stats_table = QTableWidget()
+        self.stats_table.setColumnCount(2)
+        self.stats_table.setHorizontalHeaderLabels(["Metric", "Value"])
+        self.stats_table.horizontalHeader().setStretchLastSection(True)
+        summary_layout.addWidget(self.stats_table)
+        
+        refresh_btn = QPushButton("Refresh Statistics")
+        refresh_btn.clicked.connect(self.refresh_analytics)
+        summary_layout.addWidget(refresh_btn)
+        
+        summary_group.setLayout(summary_layout)
+        layout.addWidget(summary_group)
+        
+        # Export button
+        export_btn = QPushButton("Export Statistics to JSON")
+        export_btn.clicked.connect(self.export_analytics)
+        layout.addWidget(export_btn)
+        
+        layout.addStretch()
+        
+        # Load initial stats
+        self.refresh_analytics()
+        
+        return tab
+    
+    def create_monitoring_tab(self):
+        """Real-time monitoring tab"""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        
+        info_label = QLabel("Automatically process new videos in a folder")
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+        
+        # Folder selection
+        folder_group = QGroupBox("Monitor Folder")
+        folder_layout = QHBoxLayout()
+        
+        self.monitor_folder_label = QLabel("No folder selected")
+        folder_layout.addWidget(self.monitor_folder_label)
+        
+        browse_btn = QPushButton("Browse...")
+        browse_btn.clicked.connect(self.browse_monitor_folder)
+        folder_layout.addWidget(browse_btn)
+        
+        folder_group.setLayout(folder_layout)
+        layout.addWidget(folder_group)
+        
+        # Monitor controls
+        control_layout = QHBoxLayout()
+        
+        self.start_monitor_btn = QPushButton("Start Monitoring")
+        self.start_monitor_btn.clicked.connect(self.start_monitoring)
+        control_layout.addWidget(self.start_monitor_btn)
+        
+        self.stop_monitor_btn = QPushButton("Stop Monitoring")
+        self.stop_monitor_btn.clicked.connect(self.stop_monitoring)
+        self.stop_monitor_btn.setEnabled(False)
+        control_layout.addWidget(self.stop_monitor_btn)
+        
+        layout.addLayout(control_layout)
+        
+        # Status
+        self.monitor_status_label = QLabel("Status: Not monitoring")
+        layout.addWidget(self.monitor_status_label)
+        
+        layout.addStretch()
+        
+        return tab
+    
     def create_updates_tab(self):
-        """Updates checking tab"""
+        """Updates checking tab with configurable repo"""
         tab = QWidget()
         layout = QVBoxLayout(tab)
         
         info_group = QGroupBox("Application Information")
         info_layout = QVBoxLayout()
-        info_layout.addWidget(QLabel("Version: 1.0.0"))
-        info_layout.addWidget(QLabel("GitHub: [Repository URL]"))
+        info_layout.addWidget(QLabel("Version: 2.0.0 (Enhanced)"))
+        info_layout.addWidget(QLabel("New Features: AI detection, real-time monitoring, analytics, batch processing"))
         info_group.setLayout(info_layout)
         layout.addWidget(info_group)
         
+        # GitHub repository configuration
+        repo_group = QGroupBox("GitHub Repository")
+        repo_layout = QVBoxLayout()
+        
+        repo_layout.addWidget(QLabel("Repository (owner/repo):"))
+        
+        repo_input_layout = QHBoxLayout()
+        self.repo_input = QLineEdit()
+        checker = UpdateChecker()
+        self.repo_input.setText(checker.get_repository())
+        repo_input_layout.addWidget(self.repo_input)
+        
+        save_repo_btn = QPushButton("Save")
+        save_repo_btn.clicked.connect(self.save_repository)
+        repo_input_layout.addWidget(save_repo_btn)
+        
+        repo_layout.addLayout(repo_input_layout)
+        repo_group.setLayout(repo_layout)
+        layout.addWidget(repo_group)
+        
+        # Update checking
         update_group = QGroupBox("Check for Updates")
         update_layout = QVBoxLayout()
         
@@ -415,6 +648,13 @@ class MainWindow(QMainWindow):
         
         layout.addStretch()
         return tab
+    
+    def on_batch_mode_changed(self, state):
+        """Handle batch mode checkbox"""
+        self.length_widget.setEnabled(not state)
+    
+    def on_target_length_changed(self, index):
+        self.custom_length.setEnabled(index == 3)
     
     def browse_input(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -436,51 +676,168 @@ class MainWindow(QMainWindow):
             self.output_path_label.setText(file_path)
             self.log_message(f"Output will be saved to: {file_path}")
     
-    def browse_music(self):
+    def browse_music(self, length):
+        """Browse for music file for specific length"""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Music File", "",
+            self, f"Select Music for {length}s video", "",
             "Audio Files (*.mp3 *.wav *.aac *.m4a);;All Files (*)"
         )
         if file_path:
-            self.music_path_label.setText(file_path)
+            self.music_paths[length] = file_path
             self.add_music_check.setChecked(True)
-            self.log_message(f"Selected music: {file_path}")
+            
+            # Update label
+            if length == 60:
+                self.music_60s_label.setText(Path(file_path).name)
+            elif length == 600:
+                self.music_10min_label.setText(Path(file_path).name)
+            elif length == 3600:
+                self.music_1hr_label.setText(Path(file_path).name)
+            
+            self.log_message(f"Selected music for {length}s: {file_path}")
     
-    def on_target_length_changed(self, index):
-        self.custom_length.setEnabled(index == 3)  # Enable for "Custom"
+    def browse_monitor_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select Folder to Monitor")
+        if folder:
+            self.monitor_folder_label.setText(folder)
+    
+    def start_monitoring(self):
+        """Start real-time folder monitoring"""
+        folder = self.monitor_folder_label.text()
+        if folder == "No folder selected":
+            QMessageBox.warning(self, "Error", "Please select a folder to monitor")
+            return
+        
+        if not os.path.exists(folder):
+            QMessageBox.warning(self, "Error", "Selected folder does not exist")
+            return
+        
+        # Create monitor
+        self.real_time_monitor = RealTimeMonitor(folder, self.process_new_video)
+        
+        if self.real_time_monitor.start():
+            self.start_monitor_btn.setEnabled(False)
+            self.stop_monitor_btn.setEnabled(True)
+            self.monitor_status_label.setText(f"Status: Monitoring {folder}")
+            self.log_message(f"Started monitoring: {folder}")
+        else:
+            QMessageBox.warning(self, "Error", "Failed to start monitoring")
+    
+    def stop_monitoring(self):
+        """Stop real-time monitoring"""
+        if self.real_time_monitor:
+            self.real_time_monitor.stop()
+            self.start_monitor_btn.setEnabled(True)
+            self.stop_monitor_btn.setEnabled(False)
+            self.monitor_status_label.setText("Status: Not monitoring")
+            self.log_message("Stopped monitoring")
+    
+    def process_new_video(self, video_path):
+        """Process newly detected video"""
+        self.log_message(f"Auto-processing: {video_path}")
+        # Auto-set input and process
+        self.input_path_label.setText(video_path)
+        self.start_processing()
     
     def start_processing(self):
+        """Start video processing"""
         # Validate input
         input_path = self.input_path_label.text()
         if input_path == "No file selected" or not os.path.exists(input_path):
             QMessageBox.warning(self, "Error", "Please select a valid input video file")
             return
         
-        # Determine output path
+        # Determine output path(s)
         output_path = self.output_path_label.text()
         if output_path == "Default: same as input":
             output_dir = os.path.dirname(input_path)
-            output_filename = Path(input_path).stem + "_timelapse.mp4"
+            output_filename = Path(input_path).stem + "_timelapse"
             output_path = os.path.join(output_dir, output_filename)
         
-        # Get target length in seconds
-        target_idx = self.target_length.currentIndex()
-        if target_idx == 0:  # 60 seconds
-            target_seconds = 60
-        elif target_idx == 1:  # 10 minutes
-            target_seconds = 600
-        elif target_idx == 2:  # 1 hour
-            target_seconds = 3600
-        else:  # Custom
-            target_seconds = self.custom_length.value()
-        
         # Build config
-        config = {
-            'input_path': input_path,
-            'output_path': output_path,
-            'target_length': target_seconds,
+        config = self._build_config()
+        
+        batch_mode = self.batch_mode.isChecked()
+        
+        # Disable process button, enable cancel
+        self.process_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+        self.progress_bar.setValue(0)
+        self.log_message("Starting processing...")
+        
+        # Start processing thread
+        self.processing_thread = ProcessingThread(config, input_path, output_path, batch_mode)
+        self.processing_thread.progress_update.connect(self.update_progress)
+        self.processing_thread.time_estimate.connect(self.update_time_estimate)
+        self.processing_thread.processing_complete.connect(self.processing_finished)
+        self.processing_thread.start()
+    
+    def cancel_processing(self):
+        """Cancel ongoing processing"""
+        if self.processing_thread and self.processing_thread.isRunning():
+            reply = QMessageBox.question(
+                self, "Cancel Processing",
+                "Are you sure you want to cancel processing?",
+                QMessageBox.Yes | QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                self.processing_thread.cancel()
+                self.log_message("Cancelling processing...")
+    
+    def update_progress(self, value, message):
+        self.progress_bar.setValue(value)
+        self.progress_label.setText(message)
+        self.log_message(message)
+    
+    def update_time_estimate(self, seconds_remaining):
+        """Update time estimate display"""
+        if seconds_remaining > 0:
+            eta = datetime.now() + timedelta(seconds=seconds_remaining)
+            self.time_estimate_label.setText(
+                f"Estimated time remaining: {int(seconds_remaining//60)}m {int(seconds_remaining%60)}s "
+                f"(ETA: {eta.strftime('%H:%M:%S')})"
+            )
+        else:
+            self.time_estimate_label.setText("")
+    
+    def processing_finished(self, success, message, stats):
+        self.process_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
+        self.progress_bar.setValue(100 if success else 0)
+        self.time_estimate_label.setText("")
+        self.log_message(message)
+        
+        if success:
+            # Log to analytics
+            self.analytics.log_processing(stats)
+            
+            # Show success
+            QMessageBox.information(self, "Success", message)
+            
+            # Refresh analytics
+            self.refresh_analytics()
+        else:
+            QMessageBox.warning(self, "Processing Failed", message)
+    
+    def _build_config(self) -> dict:
+        """Build configuration dictionary from UI"""
+        # Get target length(s)
+        if self.batch_mode.isChecked():
+            target_lengths = [60, 600, 3600]
+        else:
+            target_idx = self.target_length.currentIndex()
+            if target_idx == 0:
+                target_lengths = [60]
+            elif target_idx == 1:
+                target_lengths = [600]
+            elif target_idx == 2:
+                target_lengths = [3600]
+            else:
+                target_lengths = [self.custom_length.value()]
+        
+        return {
             'sensitivity': self.sensitivity_slider.value(),
-            'smoothing': self.smoothing_slider.value(),
             'min_motion_duration': self.min_motion_duration.value(),
             'motion_threshold': self.motion_threshold.value(),
             'blur_size': self.blur_size.value(),
@@ -488,50 +845,24 @@ class MainWindow(QMainWindow):
             'cpu_threads': self.cpu_threads.value(),
             'quality': self.output_quality.currentIndex(),
             'add_music': self.add_music_check.isChecked(),
-            'music_path': self.music_path_label.text() if self.add_music_check.isChecked() else None
+            'music_paths': self.music_paths,
+            'target_lengths': target_lengths,
+            'motion_blur': self.motion_blur_check.isChecked(),
+            'smooth_transitions': self.smooth_transitions_check.isChecked(),
+            'color_correction': self.color_correction_check.isChecked(),
+            'filter_white': self.filter_white_frames.isChecked(),
+            'filter_black': self.filter_black_frames.isChecked(),
+            'filter_corrupted': self.filter_corrupted_frames.isChecked(),
+            'filter_blurry': self.filter_blurry_frames.isChecked()
         }
-        
-        # Disable process button
-        self.process_btn.setEnabled(False)
-        self.progress_bar.setValue(0)
-        self.log_message("Starting processing...")
-        
-        # Start processing thread
-        self.processing_thread = ProcessingThread(config, input_path, output_path)
-        self.processing_thread.progress_update.connect(self.update_progress)
-        self.processing_thread.processing_complete.connect(self.processing_finished)
-        self.processing_thread.start()
-    
-    def update_progress(self, value, message):
-        self.progress_bar.setValue(value)
-        self.progress_label.setText(message)
-        self.log_message(message)
-    
-    def processing_finished(self, success, message):
-        self.process_btn.setEnabled(True)
-        self.progress_bar.setValue(100 if success else 0)
-        self.log_message(message)
-        
-        if success:
-            QMessageBox.information(self, "Success", message)
-        else:
-            QMessageBox.warning(self, "Processing Failed", message)
     
     def log_message(self, message):
-        self.log_output.append(f"[{logging.Formatter().formatTime(logging.LogRecord('', 0, '', 0, '', (), None))}] {message}")
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.log_output.append(f"[{timestamp}] {message}")
         logger.info(message)
     
     def save_settings(self):
-        settings = {
-            'motion_sensitivity': self.sensitivity_slider.value(),
-            'smoothing': self.smoothing_slider.value(),
-            'min_motion_duration': self.min_motion_duration.value(),
-            'motion_threshold': self.motion_threshold.value(),
-            'blur_size': self.blur_size.value(),
-            'use_gpu': self.use_gpu.isChecked(),
-            'cpu_threads': self.cpu_threads.value(),
-            'output_quality': self.output_quality.currentIndex()
-        }
+        settings = self._build_config()
         self.config_manager.save_settings(settings)
         QMessageBox.information(self, "Settings Saved", "Your settings have been saved successfully")
     
@@ -539,7 +870,6 @@ class MainWindow(QMainWindow):
         settings = self.config_manager.load_settings()
         if settings:
             self.sensitivity_slider.setValue(settings.get('motion_sensitivity', 5))
-            self.smoothing_slider.setValue(settings.get('smoothing', 5))
             self.min_motion_duration.setValue(settings.get('min_motion_duration', 0.5))
             self.motion_threshold.setValue(settings.get('motion_threshold', 25))
             self.blur_size.setValue(settings.get('blur_size', 21))
@@ -550,7 +880,6 @@ class MainWindow(QMainWindow):
     
     def reset_settings(self):
         self.sensitivity_slider.setValue(5)
-        self.smoothing_slider.setValue(5)
         self.min_motion_duration.setValue(0.5)
         self.motion_threshold.setValue(25)
         self.blur_size.setValue(21)
@@ -566,6 +895,52 @@ class MainWindow(QMainWindow):
             "Please configure your credentials first.\n"
             "See README for setup instructions."
         )
+    
+    def refresh_analytics(self):
+        """Refresh analytics display"""
+        stats = self.analytics.get_summary(30)
+        
+        self.stats_table.setRowCount(0)
+        
+        # Add rows
+        rows = [
+            ("Total Videos Processed", str(stats['total_videos_processed'])),
+            ("Videos (Last 30 Days)", str(stats['recent_videos'])),
+            ("Motion Time (Last 30 Days)", f"{stats['recent_motion_time_hours']:.1f} hours"),
+            ("Avg Motion Percentage", f"{stats['average_motion_percentage']:.1f}%"),
+            ("Processing Time (Last 30 Days)", f"{stats['total_processing_time_hours']:.1f} hours"),
+            ("White Frames Filtered", str(stats['frames_filtered']['white'])),
+            ("Black Frames Filtered", str(stats['frames_filtered']['black'])),
+            ("Corrupted Frames Filtered", str(stats['frames_filtered']['corrupted'])),
+            ("Blurry Frames Filtered", str(stats['frames_filtered']['blurry'])),
+        ]
+        
+        for i, (metric, value) in enumerate(rows):
+            self.stats_table.insertRow(i)
+            self.stats_table.setItem(i, 0, QTableWidgetItem(metric))
+            self.stats_table.setItem(i, 1, QTableWidgetItem(value))
+    
+    def export_analytics(self):
+        """Export analytics to JSON"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Statistics", "statistics.json",
+            "JSON Files (*.json)"
+        )
+        if file_path:
+            self.analytics.export_statistics(file_path)
+            QMessageBox.information(self, "Exported", f"Statistics exported to {file_path}")
+    
+    def save_repository(self):
+        """Save GitHub repository URL"""
+        repo = self.repo_input.text().strip()
+        checker = UpdateChecker()
+        
+        if checker.set_repository(repo):
+            QMessageBox.information(self, "Saved", f"Repository set to: {repo}")
+        else:
+            QMessageBox.warning(self, "Invalid Format", 
+                              "Please use format: owner/repo\n"
+                              "Example: yourusername/bird-motion-processor")
     
     def check_updates(self):
         self.update_status.setText("Checking for updates...")
@@ -593,7 +968,7 @@ class MainWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
-    app.setStyle('Fusion')  # Modern look
+    app.setStyle('Fusion')
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())
