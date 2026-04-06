@@ -28,7 +28,14 @@ class Config:
     def load_config(self) -> Dict[str, Any]:
         if os.path.exists(self.config_file):
             with open(self.config_file, "r") as f:
-                return {**self.defaults, **yaml.safe_load(f)}
+                try:
+                    loaded = yaml.safe_load(f) or {}
+                except yaml.YAMLError as e:
+                    print(
+                        f"Warning: failed to parse '{self.config_file}'. Using defaults.\n{e}"
+                    )
+                    return self.defaults.copy()
+                return {**self.defaults, **loaded}
         return self.defaults.copy()
 
     def save_config(self):

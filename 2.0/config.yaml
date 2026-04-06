@@ -9,5 +9,7 @@ output_dir: /Users/simsalabim/Downloads
 output_format: mp4
 output_quality: high
 processing_mode: fast
-smoothing: trueuse_gpu: falseupdate_check: false
+smoothing: true
+use_gpu: false
+update_check: false
 youtube_client_secrets: client_secrets.json
