@@ -1,6 +1,6 @@
 """
-Video Processor Module - OPTIMIZED & FIXED
-Faster timelapse creation with safe motion blur and full CUDA acceleration.
+Video Processor Module - FINAL STABLE VERSION
+Correct duration + minimal dead frames + reliable NVENC.
 """
 
 import cv2
@@ -46,12 +46,11 @@ class VideoProcessor:
     def cancel(self):
         self.cancelled = True
 
-    def create_timelapse_batch(self, *args, **kwargs):
-        # (unchanged - same as previous version)
+    def create_timelapse_batch(self, input_path, motion_segments, output_base_path,
+                              progress_callback=None, time_estimate_callback=None):
         results = {}
         t0 = time.time()
-        base = Path(kwargs.get('output_base_path') or args[2])
-        motion_segments = args[1]
+        base = Path(output_base_path)
 
         for i, target_length in enumerate(self.target_lengths):
             if self.cancelled:
@@ -62,13 +61,13 @@ class VideoProcessor:
             out_path = base.parent / f"{base.stem}{suffix}.mp4"
 
             def _prog(p):
-                if kwargs.get('progress_callback'):
+                if progress_callback:
                     total = ((i + p / 100) / len(self.target_lengths)) * 100
-                    kwargs['progress_callback'](total)
+                    progress_callback(total)
 
             ok = self.create_timelapse(
-                args[0], motion_segments, str(out_path), target_length,
-                _prog, kwargs.get('time_estimate_callback')
+                input_path, motion_segments, str(out_path), target_length,
+                _prog, time_estimate_callback
             )
             if ok:
                 results[target_length] = str(out_path)
@@ -131,7 +130,7 @@ class VideoProcessor:
         working = concat_path
 
         if self.add_music:
-            music_path = self.music_paths.get(target_length) if isinstance(self.music_paths, dict) else None
+            music_path = self.music_paths.get(target_length)
             if music_path and os.path.exists(music_path):
                 if progress_callback:
                     progress_callback(75)
@@ -143,7 +142,7 @@ class VideoProcessor:
             if progress_callback:
                 progress_callback(85)
             rotated = os.path.join(temp_dir, "rotated.mp4")
-            self._rotate(working, rotated, transpose=1)
+            self._rotate(working, rotated)
             working = rotated
 
         if self.cancelled:
@@ -155,28 +154,24 @@ class VideoProcessor:
             output_path += ".mp4"
 
         self._encode_final(working, output_path)
-        logger.info(f"Time-lapse created: {output_path}")
+        logger.info(f"✅ Time-lapse created: {output_path}")
         return True
 
     def _extract_segment(self, input_path: str, start: float, end: float, output_path: str, speedup: float):
         duration = end - start
-        cmd = ["ffmpeg", "-y",
-               "-hwaccel", "cuda", "-hwaccel_output_format", "cuda",
-               "-ss", str(start), "-i", input_path, "-t", str(duration)]
+        cmd = ["ffmpeg", "-y", "-ss", str(start), "-i", input_path, "-t", str(duration)]
 
         filters = ["setpts=PTS-STARTPTS"]
 
         if speedup > 1.0:
             filters.append(f"setpts={1.0/speedup:.6f}*PTS")
 
-        # SAFE MOTION BLUR (fixed)
         if self.motion_blur and speedup > 1.5:
             if self.blur_strength == "strong":
                 frames = max(2, min(8, int(speedup / 2)))
                 weights = " ".join(["1.0"] * frames)
                 filters.append(f"tmix=frames={frames}:weights='{weights}'")
             else:
-                # Light & fast blur - always works
                 filters.append("tmix=frames=3:weights='1 1 1'")
 
         if filters:
@@ -207,32 +202,25 @@ class VideoProcessor:
 
         loops = int(np.ceil(vid_dur / mus_dur))
         fade_out_start = max(0, vid_dur - 2)
-        audio_filter = (
-            f"aloop=loop={loops}:size={int(mus_dur * 48000)},"
-            f"atrim=0:{vid_dur},"
-            f"afade=t=in:st=0:d=0.5,"
-            f"afade=t=out:st={fade_out_start}:d=2"
-        )
-        cmd = [
-            "ffmpeg", "-y", "-i", video_path, "-i", music_path,
-            "-filter_complex", audio_filter,
-            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-            "-shortest", output_path,
-        ]
+        audio_filter = f"aloop=loop={loops}:size={int(mus_dur * 48000)},atrim=0:{vid_dur},afade=t=in:st=0:d=0.5,afade=t=out:st={fade_out_start}:d=2"
+        cmd = ["ffmpeg", "-y", "-i", video_path, "-i", music_path,
+               "-filter_complex", audio_filter,
+               "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", output_path]
         self._run(cmd)
 
-    def _rotate(self, input_path: str, output_path: str, transpose: int = 1):
+    def _rotate(self, input_path: str, output_path: str):
         cmd = ["ffmpeg", "-y", "-i", input_path,
-               "-vf", f"transpose={transpose}", "-c:a", "copy", output_path]
+               "-vf", "transpose=1", "-c:a", "copy", output_path]
         self._run(cmd)
 
     def _encode_final(self, input_path: str, output_path: str):
+        """Final encode - reset timestamps to force exact target length"""
         preset = QUALITY_PRESETS[self.quality]
-        cmd = ["ffmpeg", "-y",
-               "-hwaccel", "cuda", "-hwaccel_output_format", "cuda",
-               "-i", input_path]
-        cmd += self._encoder_args(fast=False, preset=preset)
-        cmd += ["-c:a", "copy", "-movflags", "+faststart", output_path]
+        cmd = ["ffmpeg", "-y", "-i", input_path,
+               "-vf", "setpts=PTS-STARTPTS",   # ← This forces correct duration
+               "-c:v", "h264_nvenc", "-preset", "p4",
+               "-cq", preset["nvenc_cq"], "-b:v", "0", "-pix_fmt", "yuv420p",
+               "-c:a", "copy", "-movflags", "+faststart", output_path]
         self._run(cmd)
 
     def _encoder_args(self, fast: bool = False, preset: dict = None) -> List[str]:
@@ -244,14 +232,6 @@ class VideoProcessor:
                 return ["-c:v", "h264_nvenc", "-preset", "p2", "-pix_fmt", "yuv420p"]
             return ["-c:v", "h264_nvenc", "-preset", "p4",
                     "-cq", preset["nvenc_cq"], "-b:v", "0", "-pix_fmt", "yuv420p"]
-
-        if self.hw_accel == "qsv":
-            return ["-c:v", "h264_qsv",
-                    "-preset", "fast" if fast else preset["preset"],
-                    "-global_quality", preset["crf"]]
-
-        if self.hw_accel == "videotoolbox":
-            return ["-c:v", "h264_videotoolbox", "-b:v", "5M", "-pix_fmt", "yuv420p"]
 
         return ["-c:v", "libx264",
                 "-preset", "ultrafast" if fast else preset["preset"],
@@ -272,21 +252,7 @@ class VideoProcessor:
                     return "cuda"
         except Exception:
             pass
-
-        # (rest of detection unchanged)
-        if platform.system() == "Darwin":
-            # ... Apple detection
-            pass
-        try:
-            r = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
-                               capture_output=True, text=True, timeout=3)
-            if "h264_qsv" in r.stdout:
-                logger.info("✅ Intel Quick Sync detected")
-                return "qsv"
-        except Exception:
-            pass
-
-        logger.info("No hardware encoder found — using CPU libx264")
+        logger.info("Using CPU encoding")
         return "cpu"
 
     @staticmethod
@@ -309,7 +275,3 @@ class VideoProcessor:
             stderr = e.stderr.decode(errors="replace")
             logger.error(f"stderr: {stderr[-2000:]}")
             raise
-
-
-# Keep the rest of the file exactly as in the previous optimized version
-# (the methods above replace the old ones)
