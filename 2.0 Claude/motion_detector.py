@@ -1,14 +1,17 @@
 """
-Enhanced Motion Detection Module
-Detects motion while filtering out bad frames
+Motion Detection Module - OpenCL Accelerated
+Uses OpenCV UMat API for GPU-accelerated detection via OpenCL.
 """
 
 import cv2
 import numpy as np
+import os
 import logging
 from typing import List, Tuple, Callable, Optional
 
-from frame_analyzer import SmartFrameFilter
+# Enable OpenCL
+cv2.ocl.setUseOpenCL(True)
+os.environ.setdefault("OPENCV_OPENCL_DEVICE", "NVIDIA:GPU")
 
 logger = logging.getLogger(__name__)
 
@@ -16,192 +19,174 @@ logger = logging.getLogger(__name__)
 class MotionDetector:
     def __init__(self, config: dict):
         self.config = config
-        self.sensitivity = config.get('sensitivity', 5)
-        self.min_motion_duration = config.get('min_motion_duration', 0.5)
-        self.motion_threshold = config.get('motion_threshold', 25)
-        self.blur_size = config.get('blur_size', 21)
-        
-        # Adjusted threshold based on sensitivity
-        self.adjusted_threshold = self.motion_threshold * (11 - self.sensitivity) / 5
-        
-        # Frame filtering
-        self.frame_filter = SmartFrameFilter(config)
-        
-        logger.info(f"Motion detector initialized with sensitivity={self.sensitivity}, "
-                   f"threshold={self.adjusted_threshold:.1f}")
-    
-    def detect_motion(self, video_path: str, 
-                     progress_callback: Optional[Callable] = None) -> Tuple[List[Tuple[float, float]], dict]:
-        """
-        Detect motion segments in video with quality filtering
-        
-        Args:
-            video_path: Path to input video
-            progress_callback: Optional callback for progress updates
-        
-        Returns:
-            Tuple of (motion_segments, statistics)
-        """
-        logger.info(f"Starting motion detection on: {video_path}")
-        
-        # Open video
+        self.sensitivity = config.get("sensitivity", 5)
+        self.min_motion_duration = config.get("min_motion_duration", 0.5)
+        self.segment_padding = config.get("segment_padding", 1.0)
+        self.frame_skip = config.get("frame_skip", 2)
+        self.detection_scale = config.get("detection_scale", 640)
+
+        self.motion_threshold = int(8000 * (self.sensitivity / 5.0))
+        self.bg_learn_rate = config.get("bg_learn_rate", 0.02)
+
+        self.use_opencl = cv2.ocl.haveOpenCL() and cv2.ocl.useOpenCL()
+        if self.use_opencl:
+            logger.info("OpenCL available — GPU-accelerated motion detection enabled")
+        else:
+            logger.warning("OpenCL not available — running on CPU")
+
+        logger.info(
+            f"MotionDetector ready | sensitivity={self.sensitivity} "
+            f"threshold={self.motion_threshold}px | frame_skip={self.frame_skip} "
+            f"| opencl={self.use_opencl}"
+        )
+
+    def detect_motion(
+        self,
+        video_path: str,
+        progress_callback: Optional[Callable[[float], None]] = None,
+    ) -> Tuple[List[Tuple[float, float]], dict]:
+        logger.info(f"Starting motion detection: {video_path}")
+
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
-            raise ValueError(f"Cannot open video file: {video_path}")
-        
-        fps = cap.get(cv2.CAP_PROP_FPS)
+            raise ValueError(f"Cannot open video: {video_path}")
+
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         duration = total_frames / fps
-        
-        logger.info(f"Video info: {total_frames} frames at {fps} fps ({duration:.1f} seconds)")
-        
-        # Initialize
-        ret, frame1 = cap.read()
+
+        scale = self.detection_scale / orig_w
+        det_w = self.detection_scale
+        det_h = int(orig_h * scale)
+
+        logger.info(
+            f"Video: {total_frames} frames @ {fps:.2f} fps ({duration:.1f}s) "
+            f"{orig_w}×{orig_h} → detection {det_w}×{det_h}"
+        )
+
+        ret, first_frame = cap.read()
         if not ret:
+            cap.release()
             raise ValueError("Cannot read first frame")
-        
-        # Check first frame quality
-        keep_frame, frame1, reason = self.frame_filter.filter_frame(frame1)
-        while not keep_frame and ret:
-            ret, frame1 = cap.read()
-            if ret:
-                keep_frame, frame1, reason = self.frame_filter.filter_frame(frame1)
-        
-        if not ret:
-            raise ValueError("No valid frames found in video")
-        
-        # Convert to grayscale and blur
-        gray1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
-        gray1 = cv2.GaussianBlur(gray1, (self.blur_size, self.blur_size), 0)
-        
-        motion_frames = []  # List of frame numbers with motion
-        valid_frames = {0: True}  # Track valid frames
-        frame_count = 0
-        valid_frame_count = 0
-        
-        # Process frames
+
+        first_small = cv2.resize(first_frame, (det_w, det_h))
+        avg_umat = cv2.UMat(first_small.astype(np.float32))
+
+        motion_frames: List[int] = []
+        frame_idx = 0
+        processed = 0
+        skipped_bad = 0
+
         while True:
-            ret, frame2 = cap.read()
+            ret, frame = cap.read()
             if not ret:
                 break
-            
-            frame_count += 1
-            
-            # Update progress
-            if progress_callback and frame_count % 30 == 0:
-                progress = (frame_count / total_frames) * 100
-                progress_callback(progress)
-            
-            # Check frame quality
-            keep_frame, frame2_processed, reason = self.frame_filter.filter_frame(frame2)
-            
-            if not keep_frame:
-                valid_frames[frame_count] = False
+            frame_idx += 1
+
+            if progress_callback and frame_idx % 60 == 0:
+                progress_callback((frame_idx / total_frames) * 100)
+
+            if frame_idx % self.frame_skip != 0:
                 continue
-            
-            valid_frames[frame_count] = True
-            valid_frame_count += 1
-            
-            # Convert to grayscale and blur
-            gray2 = cv2.cvtColor(frame2_processed, cv2.COLOR_BGR2GRAY)
-            gray2 = cv2.GaussianBlur(gray2, (self.blur_size, self.blur_size), 0)
-            
-            # Compute difference
-            frame_diff = cv2.absdiff(gray1, gray2)
-            
-            # Threshold
-            _, thresh = cv2.threshold(frame_diff, self.adjusted_threshold, 255, cv2.THRESH_BINARY)
-            
-            # Dilate to fill gaps
-            kernel = np.ones((5, 5), np.uint8)
-            dilated = cv2.dilate(thresh, kernel, iterations=2)
-            
-            # Count non-zero pixels (motion pixels)
+
+            if self._is_bad_frame(frame):
+                skipped_bad += 1
+                continue
+
+            small = cv2.resize(frame, (det_w, det_h))
+            umat = cv2.UMat(small.astype(np.float32))
+
+            cv2.accumulateWeighted(umat, avg_umat, self.bg_learn_rate)
+            diff = cv2.absdiff(umat, avg_umat)
+
+            diff_uint8 = cv2.convertScaleAbs(diff)
+
+            gray = cv2.cvtColor(diff_uint8, cv2.COLOR_BGR2GRAY)
+            blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+            _, thresh = cv2.threshold(blurred, 25, 255, cv2.THRESH_BINARY)
+            dilated = cv2.dilate(thresh, None, iterations=3)
+
             motion_pixels = cv2.countNonZero(dilated)
-            
-            # If significant motion detected
-            if motion_pixels > 1000:
-                motion_frames.append(frame_count)
-            
-            # Move to next frame
-            gray1 = gray2
-        
+
+            if motion_pixels > self.motion_threshold:
+                motion_frames.append(frame_idx)
+
+            processed += 1
+
         cap.release()
-        
-        # Convert motion frames to time segments
-        motion_segments = self._frames_to_segments(motion_frames, fps, 
-                                                   self.min_motion_duration)
-        
-        # Get filtering statistics
-        filter_stats = self.frame_filter.get_statistics()
-        
-        logger.info(f"Detected {len(motion_segments)} motion segments")
-        total_motion_time = sum(end - start for start, end in motion_segments)
-        logger.info(f"Total motion time: {total_motion_time:.1f}s out of {duration:.1f}s "
-                   f"({total_motion_time/duration*100:.1f}%)")
-        logger.info(f"Frame filtering: {filter_stats['filtered']} bad frames removed "
-                   f"({filter_stats.get('filter_rate', 0):.1f}%)")
-        
+
+        motion_segments = self._frames_to_segments(
+            motion_frames, fps, self.min_motion_duration, self.segment_padding, total_frames
+        )
+
+        total_motion = sum(e - s for s, e in motion_segments)
+        logger.info(
+            f"Detection complete: {len(motion_segments)} segments, "
+            f"{total_motion:.1f}s motion out of {duration:.1f}s "
+            f"({total_motion / duration * 100:.1f}%) | "
+            f"processed {processed} frames, skipped {skipped_bad} bad frames"
+        )
+
         stats = {
-            'total_frames': total_frames,
-            'valid_frames': valid_frame_count,
-            'motion_segments': len(motion_segments),
-            'motion_duration': total_motion_time,
-            'video_duration': duration,
-            'filter_stats': filter_stats
+            "total_frames": total_frames,
+            "processed_frames": processed,
+            "skipped_bad": skipped_bad,
+            "motion_segments": len(motion_segments),
+            "motion_duration": total_motion,
+            "video_duration": duration,
+            "detection_method": "OpenCL UMat" if self.use_opencl else "CPU",
+            "input_file": video_path,
         }
-        
         return motion_segments, stats
-    
-    def _frames_to_segments(self, motion_frames: List[int], fps: float, 
-                           min_duration: float) -> List[Tuple[float, float]]:
-        """
-        Convert list of motion frames to time segments
-        """
+
+    @staticmethod
+    def _is_bad_frame(frame: np.ndarray) -> bool:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        mean = float(np.mean(gray))
+        return mean < 8 or mean > 248
+
+    def _frames_to_segments(
+        self,
+        motion_frames: List[int],
+        fps: float,
+        min_duration: float,
+        padding: float,
+        total_frames: int,
+    ) -> List[Tuple[float, float]]:
         if not motion_frames:
             return []
-        
-        segments = []
-        start_frame = motion_frames[0]
-        prev_frame = motion_frames[0]
-        
-        # Merge consecutive frames into segments
-        for frame in motion_frames[1:]:
-            # If there's a gap larger than 1 second, start new segment
-            if frame - prev_frame > fps:
-                # End previous segment
-                end_frame = prev_frame
-                start_time = start_frame / fps
-                end_time = end_frame / fps
-                
-                # Only add if duration meets minimum
-                if end_time - start_time >= min_duration:
-                    segments.append((start_time, end_time))
-                
-                # Start new segment
-                start_frame = frame
-            
-            prev_frame = frame
-        
-        # Add final segment
-        end_frame = prev_frame
-        start_time = start_frame / fps
-        end_time = end_frame / fps
-        if end_time - start_time >= min_duration:
-            segments.append((start_time, end_time))
-        
-        # Merge nearby segments (within 2 seconds)
-        merged_segments = []
-        if segments:
-            current_start, current_end = segments[0]
-            
-            for start, end in segments[1:]:
-                if start - current_end <= 2.0:
-                    current_end = end
-                else:
-                    merged_segments.append((current_start, current_end))
-                    current_start, current_end = start, end
-            
-            merged_segments.append((current_start, current_end))
-        
-        return merged_segments
+
+        merge_gap_frames = fps * 2.0
+        padding_frames = int(padding * fps)
+
+        raw_segments: List[Tuple[float, float]] = []
+        seg_start = motion_frames[0]
+        seg_end = motion_frames[0]
+
+        for f in motion_frames[1:]:
+            if f - seg_end <= merge_gap_frames:
+                seg_end = f
+            else:
+                raw_segments.append((seg_start, seg_end))
+                seg_start = seg_end = f
+        raw_segments.append((seg_start, seg_end))
+
+        padded: List[Tuple[float, float]] = []
+        for s, e in raw_segments:
+            t_start = max(0.0, (s - padding_frames) / fps)
+            t_end = min(total_frames / fps, (e + padding_frames) / fps)
+            if t_end - t_start >= min_duration:
+                padded.append((t_start, t_end))
+
+        if not padded:
+            return []
+        merged = [padded[0]]
+        for s, e in padded[1:]:
+            if s <= merged[-1][1] + 1.0:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+            else:
+                merged.append((s, e))
+
+        return merged

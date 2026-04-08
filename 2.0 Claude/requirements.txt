@@ -1,35 +1,31 @@
-# Core dependencies
-opencv-python>=4.8.0
+# Bird Motion Video Processor — Dependencies
+#
+# IMPORTANT: Use opencv-contrib-python for OpenCL GPU acceleration.
+# Do NOT install opencv-python alongside it.
+#
+# Install with:
+#   pip install -r requirements.txt
+
+# OpenCV with OpenCL support (works on NVIDIA, AMD, Intel via standard drivers)
+# Uninstall any other opencv first: pip uninstall opencv-python opencv-python-headless -y
+opencv-contrib-python>=4.8.0
+
+# Core
 numpy>=1.24.0
 PyQt5>=5.15.0
+requests>=2.31.0
 
-# Video processing
-# Note: FFmpeg must be installed separately on the system
-
-# Real-time monitoring
+# Real-time folder monitoring
 watchdog>=3.0.0
 
 # YouTube upload (optional)
 google-auth-oauthlib>=1.0.0
 google-api-python-client>=2.0.0
 
-# HTTP requests for updates
-requests>=2.31.0
-
-# Analytics and database
-# (SQLite is built into Python)
-
-# Optional: GPU acceleration and AI detection
-# Uncomment if you have CUDA-capable GPU or want AI bird detection
-# torch>=2.0.0
-# torchvision>=0.15.0
-# ultralytics>=8.0.0  # For YOLO models
-# opencv-contrib-python>=4.8.0
-
-# Optional: System monitoring
+# System monitoring
 psutil>=5.9.0
 
-# Development dependencies (optional)
-# pytest>=7.4.0
-# black>=23.0.0
-# pylint>=2.17.0
+# Optional AI bird detection
+# torch>=2.0.0
+# torchvision>=0.15.0
+# ultralytics>=8.0.0

@@ -1,0 +1,20 @@
+{
+    "sensitivity": 5,
+    "min_motion_duration": 0.5,
+    "segment_padding": 1.0,
+    "frame_skip": 2,
+    "use_gpu": true,
+    "cpu_threads": 23,
+    "quality": 1,
+    "add_music": false,
+    "music_paths": {
+        "60": null,
+        "600": null,
+        "3600": null
+    },
+    "target_lengths": [
+        60
+    ],
+    "motion_blur": true,
+    "color_correction": true
+}

@@ -81,3 +81,6 @@ htmlcov/
 *.dmg
 *.exe
 *.msi
+
+#FFmpeg
+ffmpeg-*-essentials_build/

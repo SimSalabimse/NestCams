@@ -10,3 +10,4 @@ nestcam_processsor_v2/nestcam_env
 nestcam_processsor_v2/processing_states
 nestcam_processsor_v2/app.log
 nestcam_processsor_v2/-m venv
+/2.0 Claude/ffmpeg-8.1-essentials_build
