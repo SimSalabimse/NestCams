@@ -1,0 +1,33 @@
+# Bird Box Video Processor v12.0
+# Python 3.9+ recommended.
+#
+# Install:
+#   pip uninstall opencv-python opencv-python-headless -y
+#   pip install -r requirements.txt
+
+# ── GUI ────────────────────────────────────────────────────────────────────────
+customtkinter==5.2.2          # Modern dark-themed CTk widgets
+tkinterdnd2==0.4.3            # Drag-and-drop (optional; graceful fallback)
+
+# ── OpenCV with OpenCL GPU support ────────────────────────────────────────────
+# IMPORTANT: do NOT install opencv-python alongside this package.
+opencv-contrib-python>=4.8.0
+
+# ── Image / numerics ──────────────────────────────────────────────────────────
+numpy>=1.24.0
+Pillow>=10.0.0
+
+# ── YouTube upload ─────────────────────────────────────────────────────────────
+google-api-python-client>=2.140.0
+google-auth-oauthlib>=1.2.1
+google-auth-httplib2>=0.2.0
+uritemplate>=4.1.1
+
+# ── Utilities ──────────────────────────────────────────────────────────────────
+requests>=2.31.0
+psutil>=6.0.0
+schedule>=1.2.2
+packaging>=24.1
+
+# ── Optional: upload speed test ───────────────────────────────────────────────
+# speedtest-cli>=2.1.3
