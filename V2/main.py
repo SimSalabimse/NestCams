@@ -1,20 +1,15 @@
 #!/usr/bin/env python3
-"""
-Bird Box Video Processor  v12.0
-Run: python main.py   or double-click Start.bat
-"""
+"""Bird Box Video Processor  v13.0 — entry point."""
+
 import sys
 
-# Windows: enable per-monitor DPI awareness before any Tk window is created
 if sys.platform == "win32":
     try:
         import ctypes
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
     except Exception:
-        try:
-            ctypes.windll.user32.SetProcessDPIAware()
-        except Exception:
-            pass
+        try: ctypes.windll.user32.SetProcessDPIAware()
+        except Exception: pass
 
 try:
     from tkinterdnd2 import TkinterDnD
@@ -25,6 +20,7 @@ except ImportError:
 import customtkinter as ctk
 from ui import VideoProcessorApp
 
+
 if __name__ == "__main__":
     if _HAS_DND:
         root = TkinterDnD.Tk()
@@ -34,4 +30,11 @@ if __name__ == "__main__":
         root = ctk.CTk()
 
     app = VideoProcessorApp(root, has_dnd=_HAS_DND)
+
+    def _on_close():
+        from utils import stop_logging
+        stop_logging()
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", _on_close)
     root.mainloop()
