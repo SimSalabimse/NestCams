@@ -2,15 +2,28 @@
 """Bird Box Video Processor  v13.0 — entry point."""
 
 import sys
+import os
 
+# ── DPI awareness (must happen before any GUI imports) ─────────────────────
 if sys.platform == "win32":
     try:
         import ctypes
+        # Per-monitor DPI v2 (Windows 10 1703+)
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
     except Exception:
-        try: ctypes.windll.user32.SetProcessDPIAware()
-        except Exception: pass
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+elif sys.platform == "darwin":
+    # macOS: Tk is Retina-aware by default; nothing extra needed
+    pass
+else:
+    # Linux / X11: set GDK scaling if not already set
+    if "GDK_SCALE" not in os.environ:
+        os.environ.setdefault("GDK_DPI_SCALE", "1")
 
+# ── Drag-and-drop support (optional) ───────────────────────────────────────
 try:
     from tkinterdnd2 import TkinterDnD
     _HAS_DND = True

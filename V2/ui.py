@@ -58,10 +58,14 @@ except ImportError:
 import logging
 logger = logging.getLogger(__name__)
 
-VERSION      = "13.0.0"
-GITHUB_REPO  = "SimSalabimse/NestCams"
+VERSION       = "13.0.0"
+GITHUB_REPO   = "SimSalabimse/NestCams"
 SETTINGS_FILE = "settings.json"
 PRESETS_FILE  = "presets.json"
+
+# Reference design resolution — all scaling is relative to this
+_REF_W = 1920
+_REF_H = 1080
 
 QUALITY_LABELS = ["Low (faster)", "Medium", "High", "Maximum (slower)"]
 COLOR_GRADES   = ["None", "GoldenHour", "Misty", "Dramatic", "Pastel", "NightGlow", "NaturalVivid"]
@@ -111,17 +115,22 @@ class VideoProcessorApp:
 
         ctk.set_appearance_mode("Dark")
         ctk.set_default_color_theme("dark-blue")
+
+        # ── Auto-scale to monitor FIRST (before any widget creation) ──────
+        self._setup_scaling()
+        # ──────────────────────────────────────────────────────────────────
+
         self.root.title(f"Bird Box Video Processor v{VERSION}")
-        self.root.geometry("1180x860")
         self.root.resizable(True, True)
         log_session(f"App started v{VERSION}")
 
-        self.F_BODY  = ctk.CTkFont(size=13)
-        self.F_HEAD  = ctk.CTkFont(size=14, weight="bold")
-        self.F_BTN   = ctk.CTkFont(size=13)
-        self.F_PROG  = ctk.CTkFont(size=12)
-        self.F_MONO  = ctk.CTkFont(family="Courier New", size=11)
-        self.F_LARGE = ctk.CTkFont(size=20, weight="bold")
+        # Scaled font helpers
+        self.F_BODY  = ctk.CTkFont(size=self._fs(13))
+        self.F_HEAD  = ctk.CTkFont(size=self._fs(14), weight="bold")
+        self.F_BTN   = ctk.CTkFont(size=self._fs(13))
+        self.F_PROG  = ctk.CTkFont(size=self._fs(12))
+        self.F_MONO  = ctk.CTkFont(family="Courier New", size=self._fs(11))
+        self.F_LARGE = ctk.CTkFont(size=self._fs(20), weight="bold")
 
         self.input_files:    List[str]   = []
         self.progress_rows:  Dict        = {}
@@ -154,10 +163,16 @@ class VideoProcessorApp:
         self._thumb_gen    = ThumbnailGenerator()
         self._exporter     = SocialMediaExporter()
 
+        # Preview canvas size is also scaled
+        prev_w = self._sz(320)
+        prev_h = self._sz(200)
+        self._preview_w = prev_w
+        self._preview_h = prev_h
+
         self.blank_img = ctk.CTkImage(
-            light_image=Image.new("RGB", (320, 200), (18, 18, 18)),
-            dark_image= Image.new("RGB", (320, 200), (18, 18, 18)),
-            size=(320, 200),
+            light_image=Image.new("RGB", (prev_w, prev_h), (18, 18, 18)),
+            dark_image= Image.new("RGB", (prev_w, prev_h), (18, 18, 18)),
+            size=(prev_w, prev_h),
         )
 
         self._check_system()
@@ -181,6 +196,56 @@ class VideoProcessorApp:
         self.root.after(33,    self._update_preview)
         self.root.after(15000, self._update_fun_fact)
         threading.Thread(target=self._check_updates, daemon=True).start()
+
+    # ── Monitor-aware scaling ──────────────────────────────────────────────
+
+    def _setup_scaling(self) -> None:
+        """
+        Detect the primary monitor's logical resolution and set:
+          • Window geometry (90 % of screen, centred, with sensible min/max)
+          • CTk widget + window scaling (so all widgets grow/shrink proportionally)
+          • self._scale for manual font/size overrides
+        """
+        # Force Tk to calculate screen geometry before we query it
+        self.root.update_idletasks()
+
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+
+        # ── Window size: 90 % of screen, clamped to reasonable bounds ──
+        win_w = max(1024, min(int(sw * 0.90), 2200))
+        win_h = max(700,  min(int(sh * 0.90), 1300))
+
+        # Centre on screen, nudge down slightly so title bar stays visible
+        x = max(0, (sw - win_w) // 2)
+        y = max(20, (sh - win_h) // 2)
+
+        self.root.geometry(f"{win_w}x{win_h}+{x}+{y}")
+        self.root.minsize(960, 660)
+
+        # ── UI scale factor relative to the 1920×1080 reference design ──
+        raw_scale = min(sw / _REF_W, sh / _REF_H)
+        # Clamp: never go below 80 % (tiny monitors) or above 175 % (4K/5K)
+        self._scale: float = round(max(0.80, min(raw_scale, 1.75)), 3)
+
+        # Apply to all CTk widgets (sizes, paddings, corner radii)
+        # Only deviate from 1.0 when the screen is meaningfully different
+        if abs(self._scale - 1.0) > 0.05:
+            ctk.set_widget_scaling(self._scale)
+            ctk.set_window_scaling(self._scale)
+
+        logger.info(
+            f"[UI] Monitor {sw}×{sh} → window {win_w}×{win_h} "
+            f"scale={self._scale:.3f}"
+        )
+
+    def _fs(self, base: int) -> int:
+        """Return a DPI-scaled font size (minimum 9 pt)."""
+        return max(9, round(base * self._scale))
+
+    def _sz(self, base: int) -> int:
+        """Return a scaled pixel size (minimum 1 px)."""
+        return max(1, round(base * self._scale))
 
     # ── System check ──────────────────────────────────────────────────────
     def _check_system(self) -> None:
@@ -239,7 +304,7 @@ class VideoProcessorApp:
                      font=self.F_HEAD, text_color="#9ca3af").pack(pady=10)
         ctk.CTkButton(dz, text="Browse Files  (Ctrl+O)", command=self.browse_files,
                       font=self.F_BTN, fg_color="#1d4ed8", hover_color="#1e40af",
-                      height=40).pack(pady=(0, 12))
+                      height=self._sz(40)).pack(pady=(0, 12))
 
         ctk.CTkLabel(tab, text="Quick-Start Presets", font=self.F_HEAD).pack(
             anchor="w", padx=14, pady=(8, 2))
@@ -247,7 +312,7 @@ class VideoProcessorApp:
         colors = ["#7c3aed", "#059669", "#dc2626", "#d97706", "#0284c7", "#db2777"]
         for i, (label, tmpl) in enumerate(QUICK_PRESETS.items()):
             ctk.CTkButton(
-                prow, text=label, width=165, height=44,
+                prow, text=label, width=self._sz(165), height=self._sz(44),
                 fg_color=colors[i % len(colors)],
                 hover_color=colors[i % len(colors)],
                 font=self.F_BTN,
@@ -258,7 +323,7 @@ class VideoProcessorApp:
             tab, text="🚀  Generate Viral Version  (Ctrl+Shift+V)",
             command=self._apply_viral_preset,
             fg_color="#dc2626", hover_color="#b91c1c",
-            font=self.F_LARGE, height=52,
+            font=self.F_LARGE, height=self._sz(52),
         ).pack(fill="x", padx=10, pady=8)
 
         self._fact_label = ctk.CTkLabel(
@@ -268,7 +333,7 @@ class VideoProcessorApp:
 
         ctk.CTkLabel(tab, text="Recent Files", font=self.F_HEAD).pack(
             anchor="w", padx=14, pady=(8, 2))
-        self.recent_frame = ctk.CTkScrollableFrame(tab, height=70)
+        self.recent_frame = ctk.CTkScrollableFrame(tab, height=self._sz(70))
         self.recent_frame.pack(fill="x", padx=10, pady=2)
         ctk.CTkLabel(self.recent_frame, text="No recent files yet.",
                      font=self.F_PROG, text_color="gray60").pack(pady=8)
@@ -323,7 +388,7 @@ class VideoProcessorApp:
 
         cf = ctk.CTkFrame(left); cf.pack(pady=4)
         ctk.CTkLabel(cf, text="Custom (s):", font=self.F_BODY).pack(side="left", padx=4)
-        self.custom_duration = ctk.CTkEntry(cf, width=90,
+        self.custom_duration = ctk.CTkEntry(cf, width=self._sz(90),
                                             placeholder_text="e.g. 300", font=self.F_BODY)
         self.custom_duration.pack(side="left")
 
@@ -331,14 +396,14 @@ class VideoProcessorApp:
         self.start_button = ctk.CTkButton(
             bf, text="▶  Start Processing", command=self.start_processing,
             state="disabled", fg_color="#16a34a", hover_color="#15803d",
-            font=self.F_HEAD, height=44)
+            font=self.F_HEAD, height=self._sz(44))
         self.start_button.pack(side="left", padx=4)
         ToolTip(self.start_button, "Ctrl+S")
 
         self.autotune_button = ctk.CTkButton(
             bf, text="🔧 AutoTune", command=self._run_autotune,
             state="disabled", fg_color="#7c3aed", hover_color="#6d28d9",
-            font=self.F_BTN, height=44)
+            font=self.F_BTN, height=self._sz(44))
         self.autotune_button.pack(side="left", padx=4)
         ToolTip(self.autotune_button,
                 "Automatically find the best motion sensitivity for this video.\n"
@@ -346,18 +411,18 @@ class VideoProcessorApp:
 
         self.pause_button = ctk.CTkButton(
             bf, text="⏸  Pause", command=self._toggle_pause,
-            state="disabled", font=self.F_BTN, height=44)
+            state="disabled", font=self.F_BTN, height=self._sz(44))
         self.pause_button.pack(side="left", padx=4)
 
         self.cancel_button = ctk.CTkButton(
             bf, text="✕  Cancel", command=self._cancel_processing,
             state="disabled", fg_color="#dc2626", hover_color="#b91c1c",
-            font=self.F_BTN, height=44)
+            font=self.F_BTN, height=self._sz(44))
         self.cancel_button.pack(side="left", padx=4)
         ToolTip(self.cancel_button, "Cancel immediately (Ctrl+C)")
 
         pg = ctk.CTkFrame(left); pg.pack(fill="x", pady=(6, 0), padx=4)
-        self.overall_bar = ctk.CTkProgressBar(pg, height=18)
+        self.overall_bar = ctk.CTkProgressBar(pg, height=self._sz(18))
         self.overall_bar.pack(fill="x", padx=4, pady=(4, 2))
         self.overall_bar.set(0)
         self.overall_label = ctk.CTkLabel(pg, text="", font=self.F_PROG,
@@ -377,11 +442,11 @@ class VideoProcessorApp:
         prow2 = ctk.CTkFrame(right); prow2.pack(pady=4)
         self.preview_button = ctk.CTkButton(
             prow2, text="▶  Preview", command=self._toggle_preview,
-            width=120, state="disabled", font=self.F_BTN)
+            width=self._sz(120), state="disabled", font=self.F_BTN)
         self.preview_button.pack(side="left", padx=2)
         self.roi_button = ctk.CTkButton(
             prow2, text="📐 ROI", command=self._start_roi_picker,
-            width=90, state="disabled", font=self.F_BTN,
+            width=self._sz(90), state="disabled", font=self.F_BTN,
             fg_color="#7c3aed", hover_color="#6d28d9")
         self.roi_button.pack(side="left", padx=2)
         ToolTip(self.roi_button,
@@ -392,12 +457,12 @@ class VideoProcessorApp:
 
         ctk.CTkLabel(tab, text="Per-file progress:",
                      font=self.F_BODY).pack(anchor="w", padx=14, pady=(6, 0))
-        self.progress_frame = ctk.CTkScrollableFrame(tab, height=160)
+        self.progress_frame = ctk.CTkScrollableFrame(tab, height=self._sz(160))
         self.progress_frame.pack(fill="x", padx=10, pady=2)
 
         ctk.CTkLabel(tab, text="Output files:",
                      font=self.F_BODY).pack(anchor="w", padx=14, pady=(4, 0))
-        self.output_frame = ctk.CTkScrollableFrame(tab, height=100)
+        self.output_frame = ctk.CTkScrollableFrame(tab, height=self._sz(100))
         self.output_frame.pack(fill="x", padx=10, pady=2)
 
     # ══════════════════════════════════════════════════════════════════════
@@ -522,7 +587,7 @@ class VideoProcessorApp:
         sep2 = ctk.CTkFrame(f, height=2, fg_color="gray30")
         sep2.pack(fill="x", padx=20, pady=8)
         ctk.CTkLabel(f, text="Caption Preview", font=self.F_HEAD).pack(pady=(4, 0))
-        self.caption_preview = ctk.CTkTextbox(f, height=120, font=self.F_MONO)
+        self.caption_preview = ctk.CTkTextbox(f, height=self._sz(120), font=self.F_MONO)
         self.caption_preview.pack(fill="x", padx=10, pady=4)
         self.caption_preview.configure(state="disabled")
 
@@ -714,14 +779,14 @@ class VideoProcessorApp:
                               ("12-minute reel",     "720"),
                               ("1-hour reel",        "3600")]:
             r = ctk.CTkFrame(f); r.pack(fill="x", padx=10, pady=4)
-            ctk.CTkLabel(r, text=display, width=180,
+            ctk.CTkLabel(r, text=display, width=self._sz(180),
                          anchor="w", font=self.F_BODY).pack(side="left", padx=4)
             lbl = ctk.CTkLabel(r, text="No file", font=self.F_BODY)
             lbl.pack(side="left", padx=4, expand=True, fill="x")
-            ctk.CTkButton(r, text="Browse…", width=90, font=self.F_BTN,
+            ctk.CTkButton(r, text="Browse…", width=self._sz(90), font=self.F_BTN,
                           command=lambda k=key, l=lbl: self._pick_music(k, l)
                           ).pack(side="right", padx=2)
-            ctk.CTkButton(r, text="Clear", width=60, font=self.F_BTN,
+            ctk.CTkButton(r, text="Clear", width=self._sz(60), font=self.F_BTN,
                           command=lambda k=key, l=lbl: self._clear_music(k, l)
                           ).pack(side="right", padx=2)
             self._music_labels[key] = lbl
@@ -746,7 +811,7 @@ class VideoProcessorApp:
         bf = ctk.CTkFrame(f); bf.pack(fill="x", padx=10, pady=2)
         self.batch_in_label = ctk.CTkLabel(bf, text="Not set", font=self.F_BODY)
         self.batch_in_label.pack(side="left", padx=4, expand=True, fill="x")
-        ctk.CTkButton(bf, text="Browse…", width=90, font=self.F_BTN,
+        ctk.CTkButton(bf, text="Browse…", width=self._sz(90), font=self.F_BTN,
                       command=self._select_batch_input).pack(side="right", padx=4)
 
         ctk.CTkLabel(f, text="Output folder:", font=self.F_BODY).pack(
@@ -754,7 +819,7 @@ class VideoProcessorApp:
         bof = ctk.CTkFrame(f); bof.pack(fill="x", padx=10, pady=2)
         self.batch_out_label = ctk.CTkLabel(bof, text="Same as input", font=self.F_BODY)
         self.batch_out_label.pack(side="left", padx=4, expand=True, fill="x")
-        ctk.CTkButton(bof, text="Browse…", width=90, font=self.F_BTN,
+        ctk.CTkButton(bof, text="Browse…", width=self._sz(90), font=self.F_BTN,
                       command=self._select_batch_output).pack(side="right", padx=4)
 
         ctk.CTkLabel(f, text="Durations:", font=self.F_BODY).pack(anchor="w", padx=10, pady=(8, 0))
@@ -776,10 +841,10 @@ class VideoProcessorApp:
         ctk.CTkButton(
             f, text="▶  Start Batch Processing", command=self._start_batch,
             fg_color="#16a34a", hover_color="#15803d",
-            font=self.F_HEAD, height=44,
+            font=self.F_HEAD, height=self._sz(44),
         ).pack(pady=8)
 
-        self.batch_bar = ctk.CTkProgressBar(f, height=14)
+        self.batch_bar = ctk.CTkProgressBar(f, height=self._sz(14))
         self.batch_bar.pack(fill="x", padx=10, pady=2)
         self.batch_bar.set(0)
         self.batch_label = ctk.CTkLabel(f, text="", font=self.F_PROG,
@@ -840,11 +905,11 @@ class VideoProcessorApp:
         tab = self.tabs.tab("📊 Analytics")
         ctk.CTkLabel(tab, text="Session Analytics",
                      font=self.F_HEAD).pack(pady=(10, 4))
-        self.analytics_scroll = ctk.CTkScrollableFrame(tab, height=240)
+        self.analytics_scroll = ctk.CTkScrollableFrame(tab, height=self._sz(240))
         self.analytics_scroll.pack(fill="x", padx=10, pady=4)
         ctk.CTkLabel(tab, text="Session Log  (last 200 lines):",
                      font=self.F_BODY).pack(anchor="w", padx=14, pady=(8, 0))
-        self.log_viewer = ctk.CTkTextbox(tab, font=self.F_MONO, height=180)
+        self.log_viewer = ctk.CTkTextbox(tab, font=self.F_MONO, height=self._sz(180))
         self.log_viewer.pack(fill="both", expand=True, padx=10, pady=4)
         ctk.CTkButton(tab, text="🔄 Refresh Log",
                       command=self._refresh_log_viewer, font=self.F_BTN).pack(pady=4)
@@ -860,7 +925,7 @@ class VideoProcessorApp:
         hdr = ctk.CTkFrame(self.analytics_scroll); hdr.pack(fill="x", pady=1)
         for col, w in [("File", 200), ("Video", 70), ("Motion", 90),
                        ("%", 55), ("Segs", 55), ("Proc", 70), ("Method", 120)]:
-            ctk.CTkLabel(hdr, text=col, width=w, anchor="w",
+            ctk.CTkLabel(hdr, text=col, width=self._sz(w), anchor="w",
                          font=self.F_BODY, text_color="gray70").pack(side="left", padx=3)
         for d in self.analytics_data:
             dur = d.get("video_duration", 0)
@@ -874,7 +939,7 @@ class VideoProcessorApp:
                 (f"{d.get('processing_time', 0):.1f}s", 70),
                 (d.get("detection_method", "—"), 120),
             ]:
-                ctk.CTkLabel(r, text=txt, width=ww, anchor="w",
+                ctk.CTkLabel(r, text=txt, width=self._sz(ww), anchor="w",
                              font=self.F_PROG).pack(side="left", padx=3)
 
     def _refresh_log_viewer(self) -> None:
@@ -903,7 +968,7 @@ class VideoProcessorApp:
         self.out_dir_label = ctk.CTkLabel(df, text="Same as input", font=self.F_BODY)
         self.out_dir_label.pack(side="left", padx=4, expand=True, fill="x")
         ctk.CTkButton(df, text="Browse…", command=self._select_output_dir,
-                      width=90, font=self.F_BTN).pack(side="right", padx=4)
+                      width=self._sz(90), font=self.F_BTN).pack(side="right", padx=4)
 
         ctk.CTkLabel(f, text="Watermark text (empty = none):",
                      font=self.F_BODY).pack(pady=(10, 0), anchor="w")
@@ -949,14 +1014,15 @@ class VideoProcessorApp:
         ctk.CTkLabel(sf, text="Schedule daily processing at (HH:MM):",
                      font=self.F_BODY).pack(pady=4)
         self.schedule_entry = ctk.CTkEntry(sf, placeholder_text="23:30",
-                                           width=120, font=self.F_BODY)
+                                           width=self._sz(120), font=self.F_BODY)
         self.schedule_entry.pack(pady=2)
         ctk.CTkButton(sf, text="Set Schedule", command=self._set_schedule,
                       font=self.F_BTN).pack(pady=4)
 
         pf = ctk.CTkFrame(f); pf.pack(fill="x", padx=10, pady=8)
         ctk.CTkLabel(pf, text="Settings Presets", font=self.F_HEAD).pack(pady=4)
-        self.preset_combo = ctk.CTkComboBox(pf, values=[], width=280, font=self.F_BTN)
+        self.preset_combo = ctk.CTkComboBox(pf, values=[], width=self._sz(280),
+                                            font=self.F_BTN)
         self.preset_combo.pack(pady=4)
         r1 = ctk.CTkFrame(pf); r1.pack(pady=2)
         ctk.CTkButton(r1, text="Load",   command=self._load_preset,
@@ -965,7 +1031,7 @@ class VideoProcessorApp:
                       fg_color="gray40", font=self.F_BTN).pack(side="left", padx=4)
         r2 = ctk.CTkFrame(pf); r2.pack(pady=4)
         self.preset_name = ctk.CTkEntry(r2, placeholder_text="Preset name…",
-                                        width=180, font=self.F_BODY)
+                                        width=self._sz(180), font=self.F_BODY)
         self.preset_name.pack(side="left", padx=4)
         ctk.CTkButton(r2, text="Save as Preset",
                       command=self._save_preset, font=self.F_BTN).pack(side="left", padx=4)
@@ -1282,8 +1348,10 @@ Repository: https://github.com/{GITHUB_REPO}
             messagebox.showerror("ROI", "Could not read first frame."); return
 
         h, w   = frame.shape[:2]
-        scale  = min(700 / w, 700 / h, 1.0)
-        dw, dh = int(w * scale), int(h * scale)
+        # Scale the ROI window to ~70% of screen height
+        max_dim = int(self.root.winfo_screenheight() * 0.70)
+        scale   = min(max_dim / max(w, h), 1.0)
+        dw, dh  = int(w * scale), int(h * scale)
         frame_r = cv2.resize(frame, (dw, dh))
         img_pil = Image.fromarray(cv2.cvtColor(frame_r, cv2.COLOR_BGR2RGB))
 
@@ -1422,6 +1490,7 @@ Repository: https://github.com/{GITHUB_REPO}
             self.preview_queue.queue.clear()
 
     def _read_frames(self) -> None:
+        pw, ph   = self._preview_w, self._preview_h
         interval = 1.0 / getattr(self, "_preview_fps", 30)
         while self.preview_running and self.preview_cap and self.preview_cap.isOpened():
             t0  = time.time()
@@ -1429,9 +1498,9 @@ Repository: https://github.com/{GITHUB_REPO}
             self.preview_cap.set(cv2.CAP_PROP_POS_FRAMES, float(idx))
             ret, frame = self.preview_cap.read()
             if not ret: continue
-            frame = cv2.resize(frame, (320, 200))
+            frame = cv2.resize(frame, (pw, ph))
             img   = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            ci    = ctk.CTkImage(light_image=img, dark_image=img, size=(320, 200))
+            ci    = ctk.CTkImage(light_image=img, dark_image=img, size=(pw, ph))
             try:
                 self.preview_queue.put_nowait(
                     (ci, min(idx + 1, int(self.preview_slider.cget("to")))))
@@ -1451,13 +1520,14 @@ Repository: https://github.com/{GITHUB_REPO}
         self.root.after(33, self._update_preview)
 
     def _seek_preview(self, val) -> None:
+        pw, ph = self._preview_w, self._preview_h
         if not self.preview_running and self.preview_cap and self.preview_cap.isOpened():
             self.preview_cap.set(cv2.CAP_PROP_POS_FRAMES, float(int(float(val))))
             ret, frame = self.preview_cap.read()
             if ret:
-                frame = cv2.resize(frame, (320, 200))
+                frame = cv2.resize(frame, (pw, ph))
                 img   = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                ci    = ctk.CTkImage(light_image=img, dark_image=img, size=(320, 200))
+                ci    = ctk.CTkImage(light_image=img, dark_image=img, size=(pw, ph))
                 self.preview_label.configure(image=ci, text="")
                 self.preview_image = ci
 
@@ -1515,14 +1585,15 @@ Repository: https://github.com/{GITHUB_REPO}
 
         for f in files_to_process:
             row = ctk.CTkFrame(self.progress_frame); row.pack(fill="x", pady=2)
-            ctk.CTkLabel(row, text=os.path.basename(f), width=200,
+            ctk.CTkLabel(row, text=os.path.basename(f), width=self._sz(200),
                          anchor="w", font=self.F_BODY).pack(side="left", padx=4)
-            status = ctk.CTkLabel(row, text="Queued", width=180,
+            status = ctk.CTkLabel(row, text="Queued", width=self._sz(180),
                                   anchor="w", font=self.F_PROG)
             status.pack(side="left", padx=4)
-            bar = ctk.CTkProgressBar(row, width=200, height=14)
+            bar = ctk.CTkProgressBar(row, width=self._sz(200), height=self._sz(14))
             bar.pack(side="left", padx=4); bar.set(0)
-            pct = ctk.CTkLabel(row, text="0%", width=40, anchor="e", font=self.F_PROG)
+            pct = ctk.CTkLabel(row, text="0%", width=self._sz(40),
+                               anchor="e", font=self.F_PROG)
             pct.pack(side="left", padx=2)
             self.progress_rows[f] = {"status": status, "progress": bar, "pct": pct}
 
@@ -1784,9 +1855,9 @@ Repository: https://github.com/{GITHUB_REPO}
             row, text=f"{os.path.basename(input_file)} → {task_name}",
             anchor="w", font=self.F_BODY,
         ).pack(side="left", padx=6, expand=True, fill="x")
-        ctk.CTkButton(row, text="Open", width=60, font=self.F_BTN,
+        ctk.CTkButton(row, text="Open", width=self._sz(60), font=self.F_BTN,
                       command=lambda: self._open_file(out_file)).pack(side="left", padx=2)
-        ub = ctk.CTkButton(row, text="YouTube", width=90, font=self.F_BTN)
+        ub = ctk.CTkButton(row, text="YouTube", width=self._sz(90), font=self.F_BTN)
         ub.configure(
             command=lambda b=ub, f=out_file, t=task_name: start_upload(self, f, t, b))
         ub.pack(side="left", padx=2)
